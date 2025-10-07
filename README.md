@@ -475,6 +475,18 @@ We also thank the open-sourcing of these works where some of our code is based o
 If you use CARE-PD in your research, please cite:
 
 ```
-[Citation information to be provided upon publication]
+@inproceedings{adeli2025carepd,
+title={CARE-PD: A Multi-Site Anonymized Clinical Dataset for Parkinson’s Disease Gait Assessment},
+author={Vida Adeli, Ivan Klabučar, Javad Rajabi, Benjamin Filtjens, Soroush Mehraban, Diwei Wang, Hyewon Seo, Trung-Hieu Hoang, Minh N. Do, Candice Muller, Claudia Neves de Oliveira, Daniel Boari Coelho, Pieter Ginis, Moran Gilat, Alice Nieuwboer, Joke Spildooren, J. Lucas McKay, Hyeokhyen Kwon, Gari Clifford, Christine D. Esper, Stewart A. Factor, Imari Genias, Amirhossein Dadashzadeh, Leia Shum, Alan Whone, Majid Mirmehdi, Andrea Iaboni, Babak Taati},
+booktitle={NeurIPS},
+year={2025}
+}
 ```
+and all applicable original dataset papers when using the corresponding cohorts.
+<p style="font-size: 1em;">
+          <strong>Complete list of citations:</strong> 
+          <a href="https://neurips2025.care-pd.ca/citations.html" style="color: #3273dc; text-decoration: underline;">
+            View all original dataset citations →
+          </a>
+        </p>
 
