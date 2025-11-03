@@ -5,7 +5,7 @@
 <p align="center">
         <a href="https://arxiv.org/abs/2510.04312"><img src='https://img.shields.io/badge/CAREPD-arXiv-B31B1B.svg' alt='Paper PDF'></a>
         <a href="https://neurips2025.care-pd.ca/"><img src='https://img.shields.io/badge/CAREPD-Project_Page-green.svg' alt='Project Page'></a>
-        <a href=""><img src='https://img.shields.io/badge/CAREPD-HuggingFace_Model-yellow'></a>
+        <a href="https://huggingface.co/datasets/vida-adl/CARE-PD"><img src='https://img.shields.io/badge/CAREPD-HuggingFace_Model-yellow'></a>
         <a href="https://borealisdata.ca/dataset.xhtml?persistentId=doi:10.5683/SP3/TWIKMK"><img src='https://img.shields.io/badge/CAREPD-Dataverse-purple'></a>
     <br>
 </p>
