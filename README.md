@@ -54,7 +54,10 @@ pip install torch==2.6.0+cu118 torchvision==0.21.0+cu118 --index-url https://dow
 ```
 mkdir -p assets/datasets
 ```
-Download the CARE-PD datasets from Dataverse and put them in the `assets/datasets` folder.
+Download the CARE-PD datasets from Dataverse and put them in the `assets/datasets` folder. Optionally you can download from HuggingFace:
+```
+huggingface-cli download vida-adl/CARE-PD --repo-type dataset --local-dir ./assets/datasets
+```
 You can use smpl_reader to read files and get a summary stats:
 ```
 python data/smpl_reader.py --dataset PD-GaM BMCLab 3DGait T-SDU-PD DNE E-LC KUL-DT-T T-LTC T-SDU
