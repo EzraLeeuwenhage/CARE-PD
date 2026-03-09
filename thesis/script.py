@@ -2,6 +2,8 @@ import pickle
 from pprint import pprint
 import numpy as np
 
+from dataloader import load_patient_walks
+
 with open("../assets/datasets/PD-GaM.pkl", "rb") as f:
     data = pickle.load(f)
 
@@ -56,7 +58,7 @@ for wid in walk_ids:
 if updrs_scores:
     min_u = min(updrs_scores)
     max_u = max(updrs_scores)
-    print(f"UPDRS Range for Patient 001: {min_u} to {max_u} (Diff: {max_u - min_u})")
+    print(f"UPDRS Range for Patient 003: {min_u} to {max_u} (Diff: {max_u - min_u})")
 else:
     print("UPDRS key not found in walk data. You might need to check p1_w1_data.keys().")
 
@@ -93,3 +95,11 @@ def compare_walk_suffixes(patient_data, base_id):
 # We strip the '_0' to get the base ID
 base_walk_id = '001-12-104704_wid06' 
 compare_walk_suffixes(data['001'], base_walk_id)
+
+
+# new script for inspection .npz file format
+npz_path = "../assets/datasets/h36m/PD-GaM/h36m_3d_world_floorXZZplus_30f_or_longer.npz"
+patient_003_data = load_patient_walks(npz_path, patient_prefix="003")
+
+for i in range(len(patient_003_data)):
+    print(f"  Clip ID: {patient_003_data[i]['clip_id']}")

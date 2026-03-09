@@ -129,7 +129,7 @@ def create_fixed_length_windows(walks_list, window_size=60, step_size=30):
 
 
 if __name__ == "__main__":
-    npz_path = r"assets\datasets\h36m\PD-GaM\h36m_3d_world_floorXZZplus_30f_or_longer.npz"
+    npz_path = "../assets/datasets/h36m/PD-GaM/h36m_3d_world_floorXZZplus_30f_or_longer.npz"
     
     # 1. Get the target data (x_1 for your flow matching)
     patient_003_data = load_patient_walks(npz_path, patient_prefix="003")

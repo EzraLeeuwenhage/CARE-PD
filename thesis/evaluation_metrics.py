@@ -1,6 +1,10 @@
 import torch
 import numpy as np
 from scipy.signal import find_peaks
+import pickle
+import json
+from pathlib import Path
+
 
 class SkeletonEvaluator:
     def __init__(self, fps=30):
@@ -19,10 +23,47 @@ class SkeletonEvaluator:
         # edges from hips to knees and to ankles
         self.major_bones = [(0,1), (1,2), (2,3), (0,4), (4,5), (5,6)] 
 
+    def _load_dataset(self, filepath):
+        """Helper to load the dataset cleanly."""        
+        print(f"Loading dataset from: {filepath}...")
+        data = np.load(filepath, allow_pickle=True)
+        # If npz contains a pickled dict, it's often inside a 0-d array
+        if hasattr(data, 'files') and len(data.files) == 1 and data.files[0] == 'arr_0':
+            data = data['arr_0'].item()
+        return data
+
+    def _get_severity_class_subsets(self, data, key_to_severity, target_class=None):
+        """
+        Groups flat .npz sequences by UPDRS_GAIT using the external labels registry.
+        Returns a dictionary mapping {severity_class: [list of sequence tensors]}.
+        """
+        subsets = {}
+        total_found = 0
+        
+        # data is a flat dictionary from .npz: {clip_id: tensor}
+        for clip_id, tensor in data.items():
+            # Skip if this clip isn't in our labels registry
+            if clip_id not in key_to_severity:
+                raise ValueError(f"Clip ID '{clip_id}' not found in severity labels registry.") 
+                
+            score = int(key_to_severity[clip_id])
+            
+            if target_class is not None and score != target_class:
+                continue
+                
+            if score not in subsets:
+                subsets[score] = []
+                
+            subsets[score].append(tensor)
+            total_found += 1
+                    
+        print(f"Extracted {total_found} sequences across {len(subsets)} severity classes.")
+        return subsets
+
     # ---------------------------------------------------------
     # PHYSICAL REALISM METRICS
     # ---------------------------------------------------------
-    def evaluate_physical_realism(self, seq_tensor):
+    def _evaluate_physical_realism(self, seq_tensor):
         """
         seq_tensor: (Time, Vertices, Channels) e.g., (60, 17, 3)
         Returns dictionary of physical metrics.
@@ -41,31 +82,75 @@ class SkeletonEvaluator:
             
         mean_bone_variance = np.mean(bone_variances)
 
-        # B. Smoothness / Jitter (Mean magnitude of acceleration)
-        # 2nd derivative of positions over time
-        velocity = np.diff(seq, axis=0)
+        # B. Smoothness / Jitter / Jerk (Mean magnitudes of derivatives)
+        velocity = np.diff(seq, axis=0) 
         acceleration = np.diff(velocity, axis=0)
+        jerk = np.diff(acceleration, axis=0) # 3rd derivative of position
+        
         jitter = np.mean(np.linalg.norm(acceleration, axis=-1))
+        mean_jerk = np.mean(np.linalg.norm(jerk, axis=-1))
+
+        # Heel Strike Detection for other measures
+        ankle_dist = np.linalg.norm(seq[:, self.L_ANKLE, :] - seq[:, self.R_ANKLE, :], axis=-1)
+        peaks, _ = find_peaks(ankle_dist, distance=8, prominence=0.02)
+        
+        heel_strike_y_range = 0.0
+        mean_foot_skating_velocity = 0.0
+        
+        if len(peaks) > 0:
+            # C. Ankle Strike Y-Range
+            # Find the lowest ankle (the stance foot) at each strike
+            l_ankle_y = seq[peaks, self.L_ANKLE, 1]
+            r_ankle_y = seq[peaks, self.R_ANKLE, 1]
+            stance_y = np.minimum(l_ankle_y, r_ankle_y)
+            
+            # The range (max - min) of the floor height across all steps in the sequence
+            heel_strike_y_range = np.ptp(stance_y) 
+            
+            # TODO: velocity is maybe not as informative as actual foot skating distance over duration of the strike 
+
+            # D. Mean Foot Skating (Horizontal velocity of stance foot at strike)
+            # Calculate horizontal (X, Z) velocity and convert to meters per second
+            horiz_vel = np.linalg.norm(np.diff(seq[:, :, [0, 2]], axis=0), axis=-1) * self.fps
+            
+            skating_velocities = []
+            for p in peaks:
+                if p == 0: continue # Skip if peak is exactly at frame 0 (no prior velocity available)
+                
+                # Identify which ankle is planted (the lower one)
+                stance_idx = self.L_ANKLE if seq[p, self.L_ANKLE, 1] < seq[p, self.R_ANKLE, 1] else self.R_ANKLE
+                
+                # Get the horizontal velocity of that specific ankle exactly at the strike
+                skating_velocities.append(horiz_vel[p-1, stance_idx])
+                
+            if skating_velocities:
+                mean_foot_skating_velocity = np.mean(skating_velocities)
 
         return {
             "bone_length_variance": mean_bone_variance,
-            "jitter": jitter
+            "jitter": jitter,
+            "mean_joint_jerk": mean_jerk,
+            "heel_strike_y_range": heel_strike_y_range,
+            "mean_foot_skating_velocity": mean_foot_skating_velocity
         }
 
     # ---------------------------------------------------------
     # CLINICAL GAIT FEATURES
     # ---------------------------------------------------------
-    def extract_pd_features(self, seq_tensor):
+    def _extract_pd_features(self, seq_tensor):
         """
         Extracts features exactly as described in CARE-PD and GaitGen papers.
-        seq_tensor: (Time, Vertices, Channels)
+        seq_tensor: (Time, Vertices, Channels).
         """
         if torch.is_tensor(seq_tensor):
             seq = seq_tensor.detach().cpu().numpy()
         else:
             seq = seq_tensor
 
+        T = seq.shape[0]
+
         # --- Care-PD ---
+
         # Heel Strike Detection
         # "Euclidean distance between left and right ankle joints over time"
         ankle_dist = np.linalg.norm(seq[:, self.L_ANKLE, :] - seq[:, self.R_ANKLE, :], axis=-1)
@@ -79,7 +164,7 @@ class SkeletonEvaluator:
             return None
 
         # 1. Cadence (Steps per minute)
-        duration_mins = seq.shape[0] / (self.fps * 60.0)
+        duration_mins = T / (self.fps * 60.0)
         cadence = num_steps / duration_mins
 
         # 2. Walking Speed (distance (meters?) per second)
@@ -135,7 +220,6 @@ class SkeletonEvaluator:
         foot_lifting = (l_ankle_lift + r_ankle_lift) / 2.0
 
         # --- GaitGen ---
-        # TODO: for gaitgen AVE, ASMD and AAMD, implement class distribution versions (as in paper)
 
         # Leg length normalization 
         # Approximate leg length as the mean Euclidean distance from Pelvis to Ankles over time
@@ -163,6 +247,11 @@ class SkeletonEvaluator:
         r_arm_norm = r_arm_range / leg_length
         arm_swing = min(l_arm_norm, r_arm_norm)
 
+        # 8. Joint Variances (For AVE calculation later)
+        mean_pos = np.mean(seq, axis=0) 
+        sq_distances = np.sum((seq - mean_pos) ** 2, axis=-1) 
+        joint_variances = np.sum(sq_distances, axis=0) / (T - 1) # Shape: (17,)
+
         return {
             "cadence": cadence,
             "walking_speed": walking_speed,
@@ -176,89 +265,178 @@ class SkeletonEvaluator:
             "emos_std": np.std(emos_array),
             "foot_lifting": foot_lifting,
             "gaitgen_stoop_posture": stoop_posture,
-            "gaitgen_arm_swing": arm_swing
+            "gaitgen_arm_swing": arm_swing,
+            "gaitgen_joint_variances": joint_variances
         }
     
     # ---------------------------------------------------------
-    # GAITGEN AVE METRIC
+    # DATASET DISTRIBUTION PROCESSING
     # ---------------------------------------------------------
-    def compute_joint_variances(self, seq_tensor):
+    def process_dataset(self, filepath, labels_path="pd_gam_labels.json", output_path="dataset_distributions.pkl", specific_keys=None, severity_class=None):
         """
-        Equation 5: Computes the variance of local joint positions for a single sequence.
-        seq_tensor: (Time, Vertices, Channels)
-        Returns: Array of shape (Vertices,) containing the variance (\sigma) for each joint.
+        Processes an .npz file of motion sequences to compute feature distributions.
+        Filters by specific_keys (list of strings) OR severity_class (int/str), 
+        otherwise processes all valid sequences.
+        Saves the aggregated distributions and raw extracted data to a pickle file.
         """
-        if torch.is_tensor(seq_tensor):
-            seq = seq_tensor.detach().cpu().numpy()
-        else:
-            seq = seq_tensor
+        try:
+            with open(labels_path, "r") as f:
+                labels_registry = json.load(f)
+            key_to_severity = labels_registry["key_to_severity"]
+        except FileNotFoundError:
+            print(f"Error: Labels file {labels_path} not found. Please run the metadata extraction script first.")
+            return None
+        
+        data = self._load_dataset(filepath)
+        if data is None:
+            return None
+        
+        # Filter dataset on specific keys if provided
+        if specific_keys is not None:
+            data = {k: v for k, v in data.items() if k in specific_keys}
             
-        T = seq.shape[0]
-        
-        # \bar{P}[j]: Mean position for each joint across all T frames
-        mean_pos = np.mean(seq, axis=0) 
-        
-        # || P_t[j] - \bar{P}[j] ||^2 : Squared Euclidean distance from the mean
-        sq_distances = np.sum((seq - mean_pos) ** 2, axis=-1) 
-        
-        # Sum over time and divide by (T - 1)
-        joint_variances = np.sum(sq_distances, axis=0) / (T - 1)
-        
-        return joint_variances
+            if not data:
+                print("No sequences found matching the provided specific_keys.")
+                return None
 
-    def calculate_ave(self, real_seq, gen_seq):
-        """
-        Equation 6: Calculates the overall Average Variance Error (AVE) 
-        between a ground-truth sequence and a generated sequence.
-        """
-        # \sigma[j] (Ground truth variance)
-        real_vars = self.compute_joint_variances(real_seq)
+        # filter dataset by severity class if provided
+        grouped_sequences = self._get_severity_class_subsets(data, key_to_severity, target_class=severity_class)
+
+        # Compile a flat list of all valid sequences for global physical metrics
+        all_sequences = []
+        for seq_list in grouped_sequences.values():
+            all_sequences.extend(seq_list)
+            
+        if not all_sequences:
+            print("No valid sequences found with UPDRS_GAIT scores and tensor data.")
+            return None
+
+        final_output = {
+            "metadata": {
+                "source_file": filepath,
+                "total_sequences": len(all_sequences)
+            },
+            "global_physical_realism_raw": {},
+            "per_class_pd_features_raw": {},
+            "per_class_pd_features": {},
+            "overall_pd_features_raw": {},
+            "overall_pd_features": {}
+        }
         
-        # \hat{\sigma}[j] (Generated variance)
-        gen_vars = self.compute_joint_variances(gen_seq)
+        print("\nComputing global physical realism metrics...")
+        phys_bone_vars = []
+        phys_jitters = []
+        phys_jerks = []
+        phys_heel_strike_y_ranges = []
+        phys_foot_skating_velocities = []
         
-        # || \sigma[j] - \hat{\sigma}[j] ||^2 : Squared difference per joint
-        per_joint_ave = (real_vars - gen_vars) ** 2
+        for seq in all_sequences:
+            phys_metrics = self._evaluate_physical_realism(seq)
+            phys_bone_vars.append(phys_metrics['bone_length_variance'])
+            phys_jitters.append(phys_metrics['jitter'])
+            phys_jerks.append(phys_metrics['mean_joint_jerk'])
+            phys_heel_strike_y_ranges.append(phys_metrics['heel_strike_y_range'])
+            phys_foot_skating_velocities.append(phys_metrics['mean_foot_skating_velocity'])
+
+            
+        final_output["global_physical_realism_raw"] = {
+            "bone_length_variances": phys_bone_vars,
+            "jitters": phys_jitters,
+            "mean_joint_jerks": phys_jerks,
+            "heel_strike_y_ranges": phys_heel_strike_y_ranges,
+            "foot_skating_velocities": phys_foot_skating_velocities
+        }
+
+        print("\nComputing PD features per severity class and globally...")
+        feature_keys = [
+            "cadence", "walking_speed", "step_length_mean", "step_length_std", 
+            "step_width_mean", "step_width_std", "step_time_mean", "step_time_std",
+            "emos_min", "emos_std", "foot_lifting", "gaitgen_stoop_posture", 
+            "gaitgen_arm_swing", "gaitgen_joint_variances"
+        ]
+        overall_features = {k: [] for k in feature_keys}
+        total_valid_seqs = 0
+
+        for severity, seq_list in grouped_sequences.items():
+            print(f"  Processing Class {severity} ({len(seq_list)} sequences)...")
+            class_features = {k: [] for k in feature_keys}
+            
+            valid_seqs = 0
+            for seq in seq_list:
+                features = self._extract_pd_features(seq)
+                if features is not None:
+                    valid_seqs += 1
+                    total_valid_seqs += 1
+                    for k, v in features.items():
+                        class_features[k].append(v)
+                        overall_features[k].append(v)
+            
+            if valid_seqs == 0:
+                continue
+            
+            final_output["per_class_pd_features_raw"][severity] = class_features
+
+            # Compute mean and std for class features, handle joint variances separately since they are arrays
+            class_stats = {"count": valid_seqs}
+            for feat_name, val_list in class_features.items():
+                if feat_name == "gaitgen_joint_variances":
+                    class_stats["gaitgen_joint_variances"] = np.mean(np.vstack(val_list), axis=0)
+                else:
+                    class_stats[f"{feat_name}_mean"] = np.mean(val_list)
+                    class_stats[f"{feat_name}_std"] = np.std(val_list)
+                    
+            final_output["per_class_pd_features"][severity] = class_stats
+
+        print("\nComputing overall dataset PD features...")
+        final_output["overall_pd_features_raw"] = overall_features
+
+        overall_stats = {"count": total_valid_seqs}
         
-        # Overall AVE: Average the errors across all joints
-        overall_ave = np.mean(per_joint_ave)
-        
-        return overall_ave
+        if total_valid_seqs > 0:
+            for feat_name, val_list in overall_features.items():
+                if feat_name == "gaitgen_joint_variances":
+                    overall_stats["gaitgen_joint_variances"] = np.mean(np.vstack(val_list), axis=0)
+                else:
+                    overall_stats[f"{feat_name}_mean"] = np.mean(val_list)
+                    overall_stats[f"{feat_name}_std"] = np.std(val_list)
+                    
+        final_output["overall_pd_features"] = overall_stats
+
+        # Save to disk using pickle (since we have NumPy arrays inside)
+        with open(output_path, 'wb') as f:
+            pickle.dump(final_output, f)
+            
+        print(f"\nSuccessfully saved structured distributions to: {output_path}")
+        return final_output
     
 
 if __name__ == "__main__":
     evaluator = SkeletonEvaluator(fps=30)
-    real_data_path = "../assets/datasets/h36m/PD-GaM/h36m_3d_world_floorXZZplus_30f_or_longer.npz"
-    
-    # The specific sequence key you want to test
-    sequence_key = "007__007-13-000661_wid00_3"
-    
-    print(f"Loading dataset from: {real_data_path}")
-    try:
-        data_dict = np.load(real_data_path, allow_pickle=True)
+    SCRIPT_DIR = Path(__file__).parent.resolve()
+    real_data_path = SCRIPT_DIR / ".." / "assets" / "datasets" / "h36m" / "PD-GaM" / "h36m_3d_world_floorXZZplus_30f_or_longer.npz"
+    labels_file = SCRIPT_DIR / "pd_gam_labels.json"
+
+    real_data_path = real_data_path.resolve()
+    labels_file = labels_file.resolve()
+
+    real_data_path_str = str(real_data_path)
+    labels_file_str = str(labels_file)
+
+    print(f"Data path resolved to: {real_data_path_str}")
+    print(f"Labels path resolved to: {labels_file_str}")
+
+    # Process Specific Patient Keys
+    with open(labels_file, "r") as f:
+        registry = json.load(f)
         
-        if sequence_key not in data_dict:
-            print(f"Error: Sequence '{sequence_key}' not found in the dataset.")
-            print(f"Here are a few valid keys you can try instead: {data_dict.files[:5]}")
-        else:
-            real_seq = data_dict[sequence_key]
-            print(f"Successfully loaded sequence '{sequence_key}'.")
-            print(f"Sequence shape: {real_seq.shape} (Expected: Time, Vertices, Channels)")
-            
-            # Evaluate Physical Realism
-            physical_metrics = evaluator.evaluate_physical_realism(real_seq)
-            print("\n--- Physical Realism Metrics (Ground Truth) ---")
-            for k, v in physical_metrics.items():
-                print(f"  {k}: {v:.6f}")
-                
-            # Evaluate Clinical Gait Features
-            clinical_features = evaluator.extract_pd_features(real_seq)
-            print("\n--- Clinical Gait Features (Ground Truth) ---")
-            if clinical_features is None:
-                print("  Error: Could not extract features. Sequence might be too short or lack distinct heel strikes.")
-            else:
-                for k, v in clinical_features.items():
-                    print(f"  {k}: {v:.6f}")
-                    
-    except FileNotFoundError:
-        print(f"Error: Could not find the file at {real_data_path}. Make sure you are running the script from the CARE-PD root directory.")
+    # Get all sequence IDs that belong to patient 007
+    patient_007_keys = [k for k in registry["key_to_severity"].keys() if k.startswith("007__")]
+    
+    print(f"Found {len(patient_007_keys)} keys for Patient 007.")
+
+    patient_stats = evaluator.process_dataset(
+        filepath=real_data_path,
+        labels_path=labels_file,
+        output_path="patient_007_distribution.pkl",
+        specific_keys=patient_007_keys
+    )
