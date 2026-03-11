@@ -415,18 +415,18 @@ if __name__ == "__main__":
     print(f"Data path resolved to: {real_data_path_str}")
     print(f"Labels path resolved to: {labels_file_str}")
 
-    # Process Specific Patient Keys
-    with open(labels_file, "r") as f:
-        registry = json.load(f)
+    # # Process Specific Patient Keys
+    # with open(labels_file, "r") as f:
+    #     registry = json.load(f)
         
-    # Get all sequence IDs that belong to patient 007
-    patient_007_keys = [k for k in registry["key_to_severity"].keys() if k.startswith("007__")]
+    # # Get all sequence IDs that belong to patient 007
+    # patient_007_keys = [k for k in registry["key_to_severity"].keys() if k.startswith("007__")]
     
-    print(f"Found {len(patient_007_keys)} keys for Patient 007.")
+    # print(f"Found {len(patient_007_keys)} keys for Patient 007.")
 
     patient_stats = evaluator.process_dataset(
         filepath=real_data_path,
         labels_path=labels_file,
-        output_path="patient_007_distribution.pkl",
-        specific_keys=patient_007_keys
+        output_path="all_patients_distribution.pkl",
+        # specific_keys=patient_007_keys
     )

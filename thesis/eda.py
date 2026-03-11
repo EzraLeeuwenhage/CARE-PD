@@ -124,6 +124,7 @@ def plot_pd_feature_bars(feature_dicts, data, title, filename, output_dir, grid_
 if __name__ == "__main__":
     SCRIPT_DIR = Path(__file__).parent.resolve()
     data_file = SCRIPT_DIR / "patient_007_distribution.pkl"
+    # data_file = SCRIPT_DIR / "all_patients_distribution.pkl"
     output_directory = SCRIPT_DIR / "visualizations"
     output_directory.mkdir(exist_ok=True)
     
@@ -141,21 +142,21 @@ if __name__ == "__main__":
         {"key": "step_width_mean", "title": "Dist. of Sequence Mean Step Widths", "ylabel": "Distance (Leg-lengths)"},
         {"key": "step_width_std", "title": "Intra-Sequence Variability (Std) of Step Width", "ylabel": "Distance (Leg-lengths)"}
     ]
-    plot_pd_feature_bars(spatial_features, dataset, "Spatial Kinematics (Leg-Length Normalized)", "02_spatial_features.png", output_directory, (2, 2))
+    plot_pd_feature_bars(spatial_features, dataset, "Step Spatial Features (Leg-Length Normalized)", "02_spatial_features.png", output_directory, (2, 2))
 
     # 3. Temporal & Pace Features (2x2 Grid)
     pace_features = [
         {"key": "cadence", "title": "Dist. of Sequence Cadence", "ylabel": "Pace (Steps / Minute)"},
         {"key": "walking_speed", "title": "Dist. of Sequence Walking Speed", "ylabel": "Speed (Leg-lengths / s)"},
         {"key": "step_time_mean", "title": "Dist. of Sequence Mean Step Times", "ylabel": "Time (Seconds)"},
-        {"key": "step_time_std", "title": "Intra-Sequence Arrhythmia (Std of Step Time)", "ylabel": "Time (Seconds)"}
+        {"key": "step_time_std", "title": "Intra-Sequence Rhythm (Std of Step Time)", "ylabel": "Time (Seconds)"}
     ]
-    plot_pd_feature_bars(pace_features, dataset, "Pace and Temporal Arrhythmia", "03_pace_features.png", output_directory, (2, 2))
+    plot_pd_feature_bars(pace_features, dataset, "Walking Pace and Rhythm", "03_pace_features.png", output_directory, (2, 2))
 
     # 4. Posture, Arm Swing, and Foot Lifting (1x3 Grid)
     posture_features = [
         {"key": "gaitgen_stoop_posture", "title": "Stooped Posture (Neck-to-Pelvis Drop)", "ylabel": "Distance (Leg-lengths)"},
-        {"key": "gaitgen_arm_swing", "title": "Upper-Body Rigidity (Min. Arm Swing)", "ylabel": "Distance (Leg-lengths)"},
+        {"key": "gaitgen_arm_swing", "title": "Upper-Body Rigidity (Mean Arm Swing)", "ylabel": "Distance (Leg-lengths)"},
         {"key": "foot_lifting", "title": "Vertical Foot Clearance (Foot Lifting)", "ylabel": "Distance (Leg-lengths)"}
     ]
     plot_pd_feature_bars(posture_features, dataset, "Posture and Limb Clearances", "04_posture_features.png", output_directory, (1, 3))
