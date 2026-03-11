@@ -8,121 +8,120 @@ def load_data(pkl_path):
     with open(pkl_path, 'rb') as f:
         return pickle.load(f)
 
-def plot_physical_realism_boxplots(data, output_dir):
-    """Creates a grid of boxplots for the raw physical realism features."""
+# ---------------------------------------------------------
+# 1. PHYSICAL REALISM BOX PLOTS (Raw Data)
+# ---------------------------------------------------------
+def plot_physical_realism_grouped(data, output_dir):
+    """Creates grouped boxplots for physical realism to avoid clutter."""
     raw_phys = data.get("global_physical_realism_raw", {})
     if not raw_phys:
-        print("No raw physical realism data found.")
         return
 
-    features = list(raw_phys.keys())
-    fig, axes = plt.subplots(1, len(features), figsize=(4 * len(features), 5))
-    
-    # Use seaborn for pretty boxplots
-    for ax, feat in zip(axes, features):
-        sns.boxplot(y=raw_phys[feat], ax=ax, color="skyblue", width=0.4)
-        ax.set_title(feat.replace('_', ' ').title(), fontsize=12, pad=10)
-        ax.set_ylabel("Value")
-        ax.grid(axis='y', linestyle='--', alpha=0.7)
+    # Extract N for annotation
+    N = len(raw_phys.get("jitters", []))
+    x_label = f"Number of Patients (N={N} seqs)"
 
+    # Group 1: Smoothness (Jitter & Jerk)
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+    sns.boxplot(y=raw_phys["jitters"], ax=axes[0], color="lightcoral", width=0.3)
+    axes[0].set_title("Jitter (Mean Joint Acceleration)", fontsize=12, pad=10)
+    axes[0].set_ylabel("Acceleration (Leg-lengths / frames^2)")
+    axes[0].set_xlabel(x_label)
+
+    sns.boxplot(y=raw_phys["mean_joint_jerks"], ax=axes[1], color="salmon", width=0.3)
+    axes[1].set_title("Jerk (Mean Rate of Accel. Change)", fontsize=12, pad=10)
+    axes[1].set_ylabel("Jerk (Leg-lengths / frames^3)")
+    axes[1].set_xlabel(x_label)
+    
     plt.tight_layout()
-    out_path = output_dir / "01_physical_realism_boxplots.png"
-    plt.savefig(out_path, dpi=300)
-    print(f"Saved: {out_path}")
+    plt.savefig(output_dir / "01a_phys_smoothness.png", dpi=300)
     plt.close()
 
-def plot_pd_feature_bars(feature_keys, data, title, filename, output_dir, grid_shape):
-    """Plots a grid of bar charts comparing Overall vs. Severity Classes."""
+    # Group 2: Environment Interaction
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+    sns.boxplot(y=raw_phys["heel_strike_y_ranges"], ax=axes[0], color="mediumaquamarine", width=0.3)
+    axes[0].set_title("Floor Consistency (Heel Strike Y-Range)", fontsize=12, pad=10)
+    axes[0].set_ylabel("Vertical Distance (Leg-lengths)")
+    axes[0].set_xlabel(x_label)
+
+    sns.boxplot(y=raw_phys["foot_skating_velocities"], ax=axes[1], color="turquoise", width=0.3)
+    axes[1].set_title("Foot Skating (Stance Ankle Velocity)", fontsize=12, pad=10)
+    axes[1].set_ylabel("Velocity (Leg-lengths / s)")
+    axes[1].set_xlabel(x_label)
+
+    plt.tight_layout()
+    plt.savefig(output_dir / "01b_phys_environment.png", dpi=300)
+    plt.close()
+
+    # Group 3: Bone Variance (Structural Constancy)
+    plt.figure(figsize=(5, 5))
+    ax = sns.boxplot(y=raw_phys["bone_length_variances"], color="plum", width=0.4)
+    ax.set_title("Structural Constancy (Bone Length Variance)", fontsize=12, pad=10)
+    ax.set_ylabel("Variance (Leg-lengths^2)")
+    ax.set_xlabel(x_label)
+    plt.tight_layout()
+    plt.savefig(output_dir / "01c_phys_bones.png", dpi=300)
+    plt.close()
+
+# ---------------------------------------------------------
+# 2. PD FEATURES BAR CHARTS (Summary Stats)
+# ---------------------------------------------------------
+def plot_pd_feature_bars(feature_dicts, data, title, filename, output_dir, grid_shape):
+    """
+    Plots summary stats (bars with error whiskers) for specified features.
+    feature_dicts is a list of dicts: {"key": "step_length", "title": "...", "ylabel": "..."}
+    """
     overall_stats = data.get("overall_pd_features", {})
     class_stats = data.get("per_class_pd_features", {})
     
-    # Identify X-axis labels (Overall + sorted severity classes)
     classes = sorted(list(class_stats.keys()))
-    x_labels = ['Overall'] + [f"Class {c}" for c in classes]
     
-    fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=(5 * grid_shape[1], 5 * grid_shape[0]))
-    axes = np.array(axes).flatten() # Flatten in case of 2D grid
+    # Create descriptive X-labels with N counts dynamically appended!
+    n_overall = overall_stats.get('count', 0)
+    x_labels = [f"Overall\n(N={n_overall})"]
+    for c in classes:
+        n_class = class_stats[c].get('count', 0)
+        x_labels.append(f"Class {c}\n(N={n_class})")
+    
+    fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=(6 * grid_shape[1], 5 * grid_shape[0]))
+    # Handle single subplots vs arrays cleanly
+    axes_flat = np.array(axes).flatten() if isinstance(axes, np.ndarray) else [axes]
 
-    for idx, base_feat in enumerate(feature_keys):
-        ax = axes[idx]
+    for idx, feat_info in enumerate(feature_dicts):
+        ax = axes_flat[idx]
+        base_key = feat_info["key"]
         
-        means = []
-        stds = []
+        means, stds = [], []
         
-        # Note: Your process_dataset script appends '_mean' and '_std' to the base feature name
-        mean_key = f"{base_feat}_mean"
-        std_key = f"{base_feat}_std"
+        # Extract Overall
+        means.append(overall_stats.get(f"{base_key}_mean", 0))
+        stds.append(overall_stats.get(f"{base_key}_std", 0))
         
-        # 1. Get Overall stat
-        means.append(overall_stats.get(mean_key, 0))
-        stds.append(overall_stats.get(std_key, 0))
-        
-        # 2. Get Class stats
+        # Extract Per Class
         for cls in classes:
-            means.append(class_stats[cls].get(mean_key, 0))
-            stds.append(class_stats[cls].get(std_key, 0))
+            means.append(class_stats[cls].get(f"{base_key}_mean", 0))
+            stds.append(class_stats[cls].get(f"{base_key}_std", 0))
 
-        # Plot Bar with Error Bars
+        # Plot Bars and Whiskers
         x_pos = np.arange(len(x_labels))
-        ax.bar(x_pos, means, yerr=stds, capsize=8, color=sns.color_palette("pastel")[0], edgecolor='black', alpha=0.8)
+        ax.bar(x_pos, means, yerr=stds, capsize=6, color=sns.color_palette("muted")[idx % 10], alpha=0.7, edgecolor='black')
         
         ax.set_xticks(x_pos)
         ax.set_xticklabels(x_labels)
-        ax.set_title(base_feat.replace('_', ' ').title(), fontsize=12)
-        ax.grid(axis='y', linestyle='--', alpha=0.7)
+        ax.set_title(feat_info["title"], fontsize=11, fontweight='bold', pad=10)
+        ax.set_ylabel(feat_info["ylabel"])
+        ax.grid(axis='y', linestyle='--', alpha=0.5)
 
-    # Hide any unused subplots
-    for j in range(len(feature_keys), len(axes)):
-        fig.delaxes(axes[j])
+    # Clean up empty subplots
+    for j in range(len(feature_dicts), len(axes_flat)):
+        fig.delaxes(axes_flat[j])
 
-    plt.suptitle(title, fontsize=16, y=1.02)
+    plt.suptitle(title, fontsize=14, fontweight='bold', y=1.05)
     plt.tight_layout()
-    out_path = output_dir / filename
-    plt.savefig(out_path, dpi=300, bbox_inches='tight')
-    print(f"Saved: {out_path}")
-    plt.close()
-
-def plot_joint_variances(data, output_dir):
-    """Plots the expected joint variances across the 17 joints as a line plot."""
-    overall_stats = data.get("overall_pd_features", {})
-    class_stats = data.get("per_class_pd_features", {})
-    
-    overall_vars = overall_stats.get("gaitgen_joint_variances")
-    
-    if overall_vars is None:
-        print("No joint variance data found.")
-        return
-
-    plt.figure(figsize=(12, 6))
-    
-    # X-axis for 17 joints
-    joints = np.arange(17)
-    
-    # Plot Overall
-    plt.plot(joints, overall_vars, marker='o', linewidth=3, color='black', label="Overall Patient", zorder=5)
-    
-    # Plot Each Class
-    colors = sns.color_palette("Set2", len(class_stats))
-    for idx, (cls, stats) in enumerate(sorted(class_stats.items())):
-        cls_vars = stats.get("gaitgen_joint_variances")
-        if cls_vars is not None:
-            plt.plot(joints, cls_vars, marker='s', linestyle='--', linewidth=2, color=colors[idx], label=f"Class {cls}")
-
-    plt.title("GaitGen Joint Variances (Motion Energy by Joint)", fontsize=14)
-    plt.xlabel("Joint Index (0-16)", fontsize=12)
-    plt.ylabel("Variance (\u03c3\u00b2)", fontsize=12)
-    plt.xticks(joints)
-    plt.grid(True, linestyle='--', alpha=0.6)
-    plt.legend()
-    plt.tight_layout()
-    
-    out_path = output_dir / "04_joint_variances_profile.png"
-    plt.savefig(out_path, dpi=300)
-    print(f"Saved: {out_path}")
+    plt.savefig(output_dir / filename, dpi=300, bbox_inches='tight')
     plt.close()
 
 if __name__ == "__main__":
-    # Define paths
     SCRIPT_DIR = Path(__file__).parent.resolve()
     data_file = SCRIPT_DIR / "patient_007_distribution.pkl"
     output_directory = SCRIPT_DIR / "visualizations"
@@ -131,22 +130,41 @@ if __name__ == "__main__":
     print(f"Loading data from: {data_file}")
     dataset = load_data(data_file)
     
-    # 1. Physical Realism Boxplots
-    plot_physical_realism_boxplots(dataset, output_directory)
+    # 1. Physical Realism (Raw Boxplots)
+    plot_physical_realism_grouped(dataset, output_directory)
     
-    # 2. Step Spatial Features (Grouped logically as requested)
-    step_spatial_keys = ["step_length_mean", "step_length_std", "step_width_mean", "step_width_std"]
-    plot_pd_feature_bars(step_spatial_keys, dataset, "Step Spatial Kinematics", "02_step_spatial_features.png", output_directory, grid_shape=(2, 2))
-    
-    # 3. General Gait & Stability Features
-    general_gait_keys = [
-        "cadence", "walking_speed", "step_time_mean", "step_time_std", 
-        "emos_min", "emos_std", "foot_lifting", "gaitgen_stoop_posture", "gaitgen_arm_swing"
+    # 2. Step Spatial Features (2x2 Grid)
+    # Grouping Mean and Std together to explicitly show intra-sequence vs inter-sequence distributions
+    spatial_features = [
+        {"key": "step_length_mean", "title": "Dist. of Sequence Mean Step Lengths", "ylabel": "Distance (Leg-lengths)"},
+        {"key": "step_length_std", "title": "Intra-Sequence Variability (Std) of Step Length", "ylabel": "Distance (Leg-lengths)"},
+        {"key": "step_width_mean", "title": "Dist. of Sequence Mean Step Widths", "ylabel": "Distance (Leg-lengths)"},
+        {"key": "step_width_std", "title": "Intra-Sequence Variability (Std) of Step Width", "ylabel": "Distance (Leg-lengths)"}
     ]
-    # 3x3 grid fits exactly 9 features
-    plot_pd_feature_bars(general_gait_keys, dataset, "Clinical Gait & Stability Features", "03_general_gait_features.png", output_directory, grid_shape=(3, 3))
-    
-    # 4. Joint Variances
-    plot_joint_variances(dataset, output_directory)
-    
-    print("\nVisualization complete! Check the 'visualizations' folder.")
+    plot_pd_feature_bars(spatial_features, dataset, "Spatial Kinematics (Leg-Length Normalized)", "02_spatial_features.png", output_directory, (2, 2))
+
+    # 3. Temporal & Pace Features (2x2 Grid)
+    pace_features = [
+        {"key": "cadence", "title": "Dist. of Sequence Cadence", "ylabel": "Pace (Steps / Minute)"},
+        {"key": "walking_speed", "title": "Dist. of Sequence Walking Speed", "ylabel": "Speed (Leg-lengths / s)"},
+        {"key": "step_time_mean", "title": "Dist. of Sequence Mean Step Times", "ylabel": "Time (Seconds)"},
+        {"key": "step_time_std", "title": "Intra-Sequence Arrhythmia (Std of Step Time)", "ylabel": "Time (Seconds)"}
+    ]
+    plot_pd_feature_bars(pace_features, dataset, "Pace and Temporal Arrhythmia", "03_pace_features.png", output_directory, (2, 2))
+
+    # 4. Posture, Arm Swing, and Foot Lifting (1x3 Grid)
+    posture_features = [
+        {"key": "gaitgen_stoop_posture", "title": "Stooped Posture (Neck-to-Pelvis Drop)", "ylabel": "Distance (Leg-lengths)"},
+        {"key": "gaitgen_arm_swing", "title": "Upper-Body Rigidity (Min. Arm Swing)", "ylabel": "Distance (Leg-lengths)"},
+        {"key": "foot_lifting", "title": "Vertical Foot Clearance (Foot Lifting)", "ylabel": "Distance (Leg-lengths)"}
+    ]
+    plot_pd_feature_bars(posture_features, dataset, "Posture and Limb Clearances", "04_posture_features.png", output_directory, (1, 3))
+
+    # 5. Stability / Balance (1x2 Grid)
+    stability_features = [
+        {"key": "emos_min", "title": "Worst-Case Balance (Min eMoS)", "ylabel": "Margin (Leg-lengths)"},
+        {"key": "emos_std", "title": "Balance Variability (Std of eMoS)", "ylabel": "Margin (Leg-lengths)"}
+    ]
+    plot_pd_feature_bars(stability_features, dataset, "Dynamic Lateral Stability (eMoS)", "05_stability_features.png", output_directory, (1, 2))
+
+    print("\nSmartly grouped visualizations complete! Check the 'visualizations' folder.")
