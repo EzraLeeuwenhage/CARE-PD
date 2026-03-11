@@ -110,7 +110,7 @@ class SkeletonEvaluator:
             # TODO: velocity is maybe not as informative as actual foot skating distance over duration of the strike 
 
             # D. Mean Foot Skating (Horizontal velocity of stance foot at strike)
-            # Calculate horizontal (X, Z) velocity and convert to meters per second
+            # Calculate horizontal (X, Z) velocity and convert to leg-lengths per second
             horiz_vel = np.linalg.norm(np.diff(seq[:, :, [0, 2]], axis=0), axis=-1) * self.fps
             
             skating_velocities = []
@@ -167,7 +167,7 @@ class SkeletonEvaluator:
         duration_mins = T / (self.fps * 60.0)
         cadence = num_steps / duration_mins
 
-        # 2. Walking Speed (distance (meters?) per second)
+        # 2. Walking Speed (distance leg-lengths per second)
         # "Total sacrum displacement between first and last heel strike, divided by time"
         first_strike, last_strike = peaks[0], peaks[-1]
         sacrum_displacement = np.linalg.norm(seq[last_strike, self.PELVIS, :] - seq[first_strike, self.PELVIS, :])
@@ -221,17 +221,11 @@ class SkeletonEvaluator:
 
         # --- GaitGen ---
 
-        # Leg length normalization 
-        # Approximate leg length as the mean Euclidean distance from Pelvis to Ankles over time
-        l_leg_dist = np.linalg.norm(seq[:, self.PELVIS, :] - seq[:, self.L_ANKLE, :], axis=-1)
-        r_leg_dist = np.linalg.norm(seq[:, self.PELVIS, :] - seq[:, self.R_ANKLE, :], axis=-1)
-        leg_length = np.mean((l_leg_dist + r_leg_dist) / 2.0)
-
         # 6. Stooped Posture (ASMD)
         # "Vertical distance between the neck and sacrum joints at each time step, 
         # averaging these distances over all frames, and normalizing by leg length."
         vertical_dist = np.abs(seq[:, self.NECK, 1] - seq[:, self.PELVIS, 1])
-        stoop_posture = np.mean(vertical_dist) / leg_length
+        stoop_posture = np.mean(vertical_dist)
 
         # 7. Arm Swing (AAMD)
         # "Euclidean distances between wrist and shoulder joints at each time step"
@@ -241,11 +235,7 @@ class SkeletonEvaluator:
         # "finding the maximum and minimum distances over the sequence" (Range = max - min)
         l_arm_range = np.ptp(l_arm_ext)
         r_arm_range = np.ptp(r_arm_ext)
-        
-        # "normalizing by leg length, and selecting the minimum arm swing between the two arms"
-        l_arm_norm = l_arm_range / leg_length
-        r_arm_norm = r_arm_range / leg_length
-        arm_swing = min(l_arm_norm, r_arm_norm)
+        arm_swing = min(l_arm_range, r_arm_range)
 
         # 8. Joint Variances (For AVE calculation later)
         mean_pos = np.mean(seq, axis=0) 
