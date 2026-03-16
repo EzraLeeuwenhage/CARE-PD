@@ -121,15 +121,55 @@ def plot_pd_feature_bars(feature_dicts, data, title, filename, output_dir, grid_
     plt.savefig(output_dir / filename, dpi=300, bbox_inches='tight')
     plt.close()
 
+
+# ---------------------------------------------------------
+# 3. SEQUENCE LENGTH DISTRIBUTION
+# ---------------------------------------------------------
+def plot_sequence_length_distribution(data, output_dir):
+    """Plots a histogram of the raw sequence lengths across the dataset."""
+    raw_lengths = data.get("overall_pd_features_raw", {}).get("sequence_length", [])
+    if not raw_lengths:
+        print("No sequence length data found to plot.")
+        return
+
+    plt.figure(figsize=(8, 5))
+    
+    # Plot histogram with a density curve
+    sns.histplot(raw_lengths, bins=20, kde=True, color="cornflowerblue", edgecolor="black")
+    
+    # Calculate some quick stats for the plot text
+    mean_len = np.mean(raw_lengths)
+    median_len = np.median(raw_lengths)
+    N = len(raw_lengths)
+    
+    plt.title(f"Distribution of Sequence Lengths (N={N} seqs)", fontsize=14, fontweight='bold', pad=10)
+    plt.xlabel("Sequence Length (Frames)", fontsize=12)
+    plt.ylabel("Frequency (Number of Sequences)", fontsize=12)
+    
+    # Add vertical lines for Mean and Median context
+    plt.axvline(mean_len, color='red', linestyle='dashed', linewidth=2, label=f'Mean: {mean_len:.1f}')
+    plt.axvline(median_len, color='green', linestyle='dotted', linewidth=2, label=f'Median: {median_len:.1f}')
+    
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.legend()
+    plt.tight_layout()
+    
+    out_path = output_dir / "00_sequence_length_distribution.png"
+    plt.savefig(out_path, dpi=300)
+    plt.close()
+
+
 if __name__ == "__main__":
     SCRIPT_DIR = Path(__file__).parent.resolve()
-    data_file = SCRIPT_DIR / "patient_007_distribution.pkl"
+    data_file = SCRIPT_DIR / "all_patients_distribution.pkl"
     # data_file = SCRIPT_DIR / "all_patients_distribution.pkl"
     output_directory = SCRIPT_DIR / "visualizations"
     output_directory.mkdir(exist_ok=True)
     
     print(f"Loading data from: {data_file}")
     dataset = load_data(data_file)
+
+    plot_sequence_length_distribution(dataset, output_directory)
     
     # 1. Physical Realism (Raw Boxplots)
     plot_physical_realism_grouped(dataset, output_directory)

@@ -256,7 +256,8 @@ class SkeletonEvaluator:
             "foot_lifting": foot_lifting,
             "gaitgen_stoop_posture": stoop_posture,
             "gaitgen_arm_swing": arm_swing,
-            "gaitgen_joint_variances": joint_variances
+            "gaitgen_joint_variances": joint_variances,
+            "sequence_length": T
         }
     
     # ---------------------------------------------------------
@@ -342,7 +343,7 @@ class SkeletonEvaluator:
             "cadence", "walking_speed", "step_length_mean", "step_length_std", 
             "step_width_mean", "step_width_std", "step_time_mean", "step_time_std",
             "emos_min", "emos_std", "foot_lifting", "gaitgen_stoop_posture", 
-            "gaitgen_arm_swing", "gaitgen_joint_variances"
+            "gaitgen_arm_swing", "gaitgen_joint_variances", "sequence_length"
         ]
         overall_features = {k: [] for k in feature_keys}
         total_valid_seqs = 0
