@@ -159,6 +159,64 @@ def plot_sequence_length_distribution(data, output_dir):
     plt.close()
 
 
+def plot_sequence_length_per_class(data, output_dir):
+    """Plots histograms of sequence lengths separated by PD severity class."""
+    class_raw = data.get("per_class_pd_features_raw", {})
+    if not class_raw:
+        print("No per-class raw data found to plot sequence lengths.")
+        return
+
+    classes = sorted(list(class_raw.keys()))
+    if len(classes) == 0:
+        return
+
+    # Create a dynamic grid (typically 2x2 for 4 UPDRS classes)
+    n_cols = 2
+    n_rows = (len(classes) + 1) // 2
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 5 * n_rows))
+    axes_flat = np.array(axes).flatten() if isinstance(axes, np.ndarray) else [axes]
+
+    colors = sns.color_palette("husl", len(classes))
+
+    for idx, cls in enumerate(classes):
+        ax = axes_flat[idx]
+        lengths = class_raw[cls].get("sequence_length", [])
+        
+        if not lengths:
+            ax.set_title(f"Class {cls} (No Data)")
+            continue
+
+        # Plot histogram with a density curve for this specific class
+        sns.histplot(lengths, bins=15, kde=True, color=colors[idx], edgecolor="black", ax=ax)
+        
+        mean_len = np.mean(lengths)
+        median_len = np.median(lengths)
+        N = len(lengths)
+        
+        ax.set_title(f"Class {cls} (N={N} seqs)", fontsize=12, fontweight='bold', pad=10)
+        ax.set_xlabel("Sequence Length (Frames)", fontsize=10)
+        ax.set_ylabel("Frequency", fontsize=10)
+        
+        # Add vertical lines for context
+        ax.axvline(mean_len, color='red', linestyle='dashed', linewidth=2, label=f'Mean: {mean_len:.1f}')
+        ax.axvline(median_len, color='green', linestyle='dotted', linewidth=2, label=f'Median: {median_len:.1f}')
+        
+        ax.grid(axis='y', linestyle='--', alpha=0.7)
+        ax.legend()
+
+    # Clean up any empty subplots if we have an odd number of classes
+    for j in range(len(classes), len(axes_flat)):
+        fig.delaxes(axes_flat[j])
+
+    plt.suptitle("Sequence Length Distributions per UPDRS Class", fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    
+    out_path = output_dir / "00b_sequence_length_per_class.png"
+    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    print(f"Saved: {out_path}")
+    plt.close()
+
+
 if __name__ == "__main__":
     SCRIPT_DIR = Path(__file__).parent.resolve()
     data_file = SCRIPT_DIR / "all_patients_distribution.pkl"
@@ -169,43 +227,44 @@ if __name__ == "__main__":
     print(f"Loading data from: {data_file}")
     dataset = load_data(data_file)
 
-    plot_sequence_length_distribution(dataset, output_directory)
+    # plot_sequence_length_distribution(dataset, output_directory)
+    plot_sequence_length_per_class(dataset, output_directory)
     
-    # 1. Physical Realism (Raw Boxplots)
-    plot_physical_realism_grouped(dataset, output_directory)
+    # # 1. Physical Realism (Raw Boxplots)
+    # plot_physical_realism_grouped(dataset, output_directory)
     
-    # 2. Step Spatial Features (2x2 Grid)
-    # Grouping Mean and Std together to explicitly show intra-sequence vs inter-sequence distributions
-    spatial_features = [
-        {"key": "step_length_mean", "title": "Dist. of Sequence Mean Step Lengths", "ylabel": "Distance (Leg-lengths)"},
-        {"key": "step_length_std", "title": "Intra-Sequence Variability (Std) of Step Length", "ylabel": "Distance (Leg-lengths)"},
-        {"key": "step_width_mean", "title": "Dist. of Sequence Mean Step Widths", "ylabel": "Distance (Leg-lengths)"},
-        {"key": "step_width_std", "title": "Intra-Sequence Variability (Std) of Step Width", "ylabel": "Distance (Leg-lengths)"}
-    ]
-    plot_pd_feature_bars(spatial_features, dataset, "Step Spatial Features (Leg-Length Normalized)", "02_spatial_features.png", output_directory, (2, 2))
+    # # 2. Step Spatial Features (2x2 Grid)
+    # # Grouping Mean and Std together to explicitly show intra-sequence vs inter-sequence distributions
+    # spatial_features = [
+    #     {"key": "step_length_mean", "title": "Dist. of Sequence Mean Step Lengths", "ylabel": "Distance (Leg-lengths)"},
+    #     {"key": "step_length_std", "title": "Intra-Sequence Variability (Std) of Step Length", "ylabel": "Distance (Leg-lengths)"},
+    #     {"key": "step_width_mean", "title": "Dist. of Sequence Mean Step Widths", "ylabel": "Distance (Leg-lengths)"},
+    #     {"key": "step_width_std", "title": "Intra-Sequence Variability (Std) of Step Width", "ylabel": "Distance (Leg-lengths)"}
+    # ]
+    # plot_pd_feature_bars(spatial_features, dataset, "Step Spatial Features (Leg-Length Normalized)", "02_spatial_features.png", output_directory, (2, 2))
 
-    # 3. Temporal & Pace Features (2x2 Grid)
-    pace_features = [
-        {"key": "cadence", "title": "Dist. of Sequence Cadence", "ylabel": "Pace (Steps / Minute)"},
-        {"key": "walking_speed", "title": "Dist. of Sequence Walking Speed", "ylabel": "Speed (Leg-lengths / s)"},
-        {"key": "step_time_mean", "title": "Dist. of Sequence Mean Step Times", "ylabel": "Time (Seconds)"},
-        {"key": "step_time_std", "title": "Intra-Sequence Rhythm (Std of Step Time)", "ylabel": "Time (Seconds)"}
-    ]
-    plot_pd_feature_bars(pace_features, dataset, "Walking Pace and Rhythm", "03_pace_features.png", output_directory, (2, 2))
+    # # 3. Temporal & Pace Features (2x2 Grid)
+    # pace_features = [
+    #     {"key": "cadence", "title": "Dist. of Sequence Cadence", "ylabel": "Pace (Steps / Minute)"},
+    #     {"key": "walking_speed", "title": "Dist. of Sequence Walking Speed", "ylabel": "Speed (Leg-lengths / s)"},
+    #     {"key": "step_time_mean", "title": "Dist. of Sequence Mean Step Times", "ylabel": "Time (Seconds)"},
+    #     {"key": "step_time_std", "title": "Intra-Sequence Rhythm (Std of Step Time)", "ylabel": "Time (Seconds)"}
+    # ]
+    # plot_pd_feature_bars(pace_features, dataset, "Walking Pace and Rhythm", "03_pace_features.png", output_directory, (2, 2))
 
-    # 4. Posture, Arm Swing, and Foot Lifting (1x3 Grid)
-    posture_features = [
-        {"key": "gaitgen_stoop_posture", "title": "Stooped Posture (Neck-to-Pelvis Drop)", "ylabel": "Distance (Leg-lengths)"},
-        {"key": "gaitgen_arm_swing", "title": "Upper-Body Rigidity (Mean Arm Swing)", "ylabel": "Distance (Leg-lengths)"},
-        {"key": "foot_lifting", "title": "Vertical Foot Clearance (Foot Lifting)", "ylabel": "Distance (Leg-lengths)"}
-    ]
-    plot_pd_feature_bars(posture_features, dataset, "Posture and Limb Clearances", "04_posture_features.png", output_directory, (1, 3))
+    # # 4. Posture, Arm Swing, and Foot Lifting (1x3 Grid)
+    # posture_features = [
+    #     {"key": "gaitgen_stoop_posture", "title": "Stooped Posture (Neck-to-Pelvis Drop)", "ylabel": "Distance (Leg-lengths)"},
+    #     {"key": "gaitgen_arm_swing", "title": "Upper-Body Rigidity (Mean Arm Swing)", "ylabel": "Distance (Leg-lengths)"},
+    #     {"key": "foot_lifting", "title": "Vertical Foot Clearance (Foot Lifting)", "ylabel": "Distance (Leg-lengths)"}
+    # ]
+    # plot_pd_feature_bars(posture_features, dataset, "Posture and Limb Clearances", "04_posture_features.png", output_directory, (1, 3))
 
-    # 5. Stability / Balance (1x2 Grid)
-    stability_features = [
-        {"key": "emos_min", "title": "Worst-Case Balance (Min eMoS)", "ylabel": "Margin (Leg-lengths)"},
-        {"key": "emos_std", "title": "Balance Variability (Std of eMoS)", "ylabel": "Margin (Leg-lengths)"}
-    ]
-    plot_pd_feature_bars(stability_features, dataset, "Dynamic Lateral Stability (eMoS)", "05_stability_features.png", output_directory, (1, 2))
+    # # 5. Stability / Balance (1x2 Grid)
+    # stability_features = [
+    #     {"key": "emos_min", "title": "Worst-Case Balance (Min eMoS)", "ylabel": "Margin (Leg-lengths)"},
+    #     {"key": "emos_std", "title": "Balance Variability (Std of eMoS)", "ylabel": "Margin (Leg-lengths)"}
+    # ]
+    # plot_pd_feature_bars(stability_features, dataset, "Dynamic Lateral Stability (eMoS)", "05_stability_features.png", output_directory, (1, 2))
 
-    print("\nSmartly grouped visualizations complete! Check the 'visualizations' folder.")
+    # print("\nSmartly grouped visualizations complete! Check the 'visualizations' folder.")
