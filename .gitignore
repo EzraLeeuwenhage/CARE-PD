@@ -11,3 +11,8 @@ experiment_outs/*
 wandb/*pretext/momask/checkpoints/t2m/text_mot_match/model/finest.tar
 pretext/momask/checkpoints/t2m/text_mot_match/model/finest.tar
 .vscode/*
+
+# .gitignore for thesis
+*.pkl
+*.npz
+*.json

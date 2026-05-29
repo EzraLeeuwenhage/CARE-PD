@@ -1,0 +1,21 @@
+data:
+  6d_smpl_path: "thesis/data/raw/PD-GaM/6D_SMPL/6D_SMPL_30f_or_longer.npz"
+  smpl_translations_path: "thesis/data/raw/PD-GaM/6D_SMPL/6D_SMPL_30f_or_longer_translations.npz"
+  severity_labels_path: "thesis/data/metadata/pd_gam_labels.json"
+  patient_prefix: "003"
+  num_joints: 24
+
+windowing:
+  total_window_size: 60
+  prefix_length: 15
+  step_size: 10
+  
+training:
+  epochs: 10
+  learning_rate: 0.001
+  batch_size: 32
+  num_workers: 4
+  shuffle: true
+  loss_weight: 0.5
+  log_interval: 1
+  save_path: "thesis/models/flow_matching_mlp.pth"

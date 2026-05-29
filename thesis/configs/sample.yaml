@@ -1,0 +1,5 @@
+sampling:
+  num_steps: 100
+  weights_path: "thesis/models/flow_matching_mlp.pth" 
+  output_dir: "thesis/data/processed/PD-GaM/6D_SMPL"
+  dataloader_config: "thesis/configs/dataloader.yaml"
