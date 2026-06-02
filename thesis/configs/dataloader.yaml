@@ -8,14 +8,14 @@ data:
 windowing:
   total_window_size: 60
   prefix_length: 15
-  step_size: 10
+  step_size: 20
   
 training:
-  epochs: 10
+  epochs: 500
   learning_rate: 0.001
   batch_size: 32
   num_workers: 4
   shuffle: true
   loss_weight: 0.5
-  log_interval: 1
+  log_interval: 50
   save_path: "thesis/models/flow_matching_mlp.pth"
