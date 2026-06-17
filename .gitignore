@@ -17,3 +17,4 @@ pretext/momask/checkpoints/t2m/text_mot_match/model/finest.tar
 *.npz
 *.json
 *.pth
+*.png
