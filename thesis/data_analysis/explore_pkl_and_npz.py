@@ -1,10 +1,13 @@
 import pickle
 from pprint import pprint
 import numpy as np
+from pathlib import Path
 
-from thesis.src.dataloader import load_patient_walks
+""" 
+Base SMPL in pickle file format
+ """
 
-with open("../assets/datasets/PD-GaM.pkl", "rb") as f:
+with open("thesis/data/raw/PD-GaM/PD-GaM.pkl", "rb") as f:
     data = pickle.load(f)
 
 # pprint(data, depth=1)
@@ -58,9 +61,9 @@ for wid in walk_ids:
 if updrs_scores:
     min_u = min(updrs_scores)
     max_u = max(updrs_scores)
-    print(f"UPDRS Range for Patient 003: {min_u} to {max_u} (Diff: {max_u - min_u})")
+    print(f"\nUPDRS Range for Patient 003: {min_u} to {max_u} (Diff: {max_u - min_u})")
 else:
-    print("UPDRS key not found in walk data. You might need to check p1_w1_data.keys().")
+    print("\nUPDRS key not found in walk data. You might need to check p1_w1_data.keys().")
 
 
 def compare_walk_suffixes(patient_data, base_id):
@@ -97,9 +100,128 @@ base_walk_id = '001-12-104704_wid06'
 compare_walk_suffixes(data['001'], base_walk_id)
 
 
+""" 
+H36M format
+ """
+
 # new script for inspection .npz file format
-npz_path = "../assets/datasets/h36m/PD-GaM/h36m_3d_world_floorXZZplus_30f_or_longer.npz"
+npz_path = "thesis/data/raw/PD-GaM/h36m/h36m_3d_world_floorXZZplus_30f_or_longer.npz"
+
+def load_patient_walks(filepath, patient_prefix="003"):
+    """
+    Loads walking sequences for a specific patient from a flat .npz file.
+    Returns a list of dictionaries containing the clip_id, tensor, and frame count.
+    """
+    print(f"Loading data from: {filepath}...")
+    
+    try:
+        data = np.load(filepath, allow_pickle=True)
+        # If the npz contains a pickled dictionary, it usually lives inside 'arr_0'
+        if hasattr(data, 'files') and len(data.files) == 1 and data.files[0] == 'arr_0':
+            data = data['arr_0'].item()
+    except Exception as e:
+        print(f"Error loading file: {e}")
+        return []
+
+    patient_walks = []
+    
+    # Iterate through the flat dictionary and filter by patient prefix
+    for clip_id, tensor in data.items():
+        # Handle cases where the key might be "003__003-12..." or just "003-12..."
+        if clip_id.startswith(f"{patient_prefix}__") or clip_id.startswith(patient_prefix):
+            patient_walks.append({
+                'clip_id': clip_id,
+                'tensor': tensor,
+                'frames': tensor.shape[0] if tensor is not None else 0
+            })
+            
+    print(f"Found {len(patient_walks)} walks for patient '{patient_prefix}'.\n")
+    return patient_walks
+
 patient_003_data = load_patient_walks(npz_path, patient_prefix="003")
 
 for i in range(len(patient_003_data)):
-    print(f"  Clip ID: {patient_003_data[i]['clip_id']}")
+    clip = patient_003_data[i]
+    print(f"  Clip ID: {clip['clip_id']:<30} | Frames: {clip['frames']:<4} | Tensor Shape: {clip['tensor'].shape}")
+
+
+""" 
+6D SMPL npz file format (split in pose and translation data files)
+ """
+def load_smpl_walks(pose_filepath, trans_filepath, patient_prefix="003"):
+    """
+    Loads SMPL pose and translation sequences for a specific patient.
+    Returns a list of dictionaries containing the clip_id, pose tensor, 
+    translation tensor, and frame count.
+    """
+    print(f"Loading pose data from: {pose_filepath}...")
+    print(f"Loading translation data from: {trans_filepath}...")
+    
+    # Helper to unpack npz arrays safely
+    def safe_load(filepath):
+        try:
+            data = np.load(filepath, allow_pickle=True)
+            if hasattr(data, 'files') and len(data.files) == 1 and data.files[0] == 'arr_0':
+                return data['arr_0'].item()
+            return data
+        except Exception as e:
+            print(f"Error loading {filepath}: {e}")
+            return None
+
+    pose_data = safe_load(pose_filepath)
+    trans_data = safe_load(trans_filepath)
+
+    if pose_data is None or trans_data is None:
+        return []
+
+    patient_walks = []
+    
+    # Iterate through the pose dictionary and filter by patient prefix
+    for clip_id, pose_tensor in pose_data.items():
+        # Handle cases where the key might be "003__..." or "003-..."
+        if clip_id.startswith(f"{patient_prefix}__") or clip_id.startswith(patient_prefix):
+            
+            # Fetch the matching translation data from the second file
+            trans_tensor = trans_data.get(clip_id)
+            
+            # Extract frame counts
+            frames = pose_tensor.shape[0] if pose_tensor is not None else 0
+            trans_frames = trans_tensor.shape[0] if trans_tensor is not None else 0
+            
+            # Sanity check: Ensure poses and translations are synchronized
+            if frames != trans_frames:
+                print(f"  [!] Warning: Frame mismatch for {clip_id} (Pose: {frames}, Trans: {trans_frames})")
+
+            patient_walks.append({
+                'clip_id': clip_id,
+                'pose': pose_tensor,
+                'trans': trans_tensor,
+                'frames': frames
+            })
+            
+    print(f"\nFound {len(patient_walks)} walks for patient '{patient_prefix}'.\n")
+    return patient_walks
+
+print(f"\n--- Loading 6D SMPL Data for Patient 003 ---")
+pose_path = "thesis/data/raw/PD-GaM/6D_SMPL/6D_SMPL_30f_or_longer.npz"
+trans_path = "thesis/data/raw/PD-GaM/6D_SMPL/6D_SMPL_30f_or_longer_translations.npz"
+patient_003_data = load_smpl_walks(pose_path, trans_path, patient_prefix="003")
+
+if patient_003_data:
+    print(f"Data format keys per walk: {list(patient_003_data[0].keys())}")
+    print("-" * 90)
+    # Formatted table header
+    print(f"{'Clip ID':<30} | {'Frames':<8} | {'Pose Shape (Rotations)':<22} | {'Trans Shape (Global)'}")
+    print("-" * 90)
+    
+    # Loop through and print the details neatly
+    for i in range(len(patient_003_data)):
+        clip = patient_003_data[i]
+        
+        # Format shapes as strings for clean table alignment
+        pose_shape = str(clip['pose'].shape) if clip['pose'] is not None else "None"
+        trans_shape = str(clip['trans'].shape) if clip['trans'] is not None else "None"
+        
+        print(f"  {clip['clip_id']:<28} | {clip['frames']:<8} | {pose_shape:<22} | {trans_shape}")
+else:
+    print("No sequences found. Please double-check the filepaths and patient prefix.")
