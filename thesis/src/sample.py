@@ -50,7 +50,6 @@ def euler_ode_solver(model, prefix_dict, x_0_dict, severity_score, num_steps=100
     }
     
     dt = 1.0 / num_steps
-    print(f"\nStarting Euler ODE solver with {num_steps} steps...")
     
     with torch.no_grad():
         for step in range(num_steps):
@@ -62,11 +61,7 @@ def euler_ode_solver(model, prefix_dict, x_0_dict, severity_score, num_steps=100
             # Euler step: x_{t+dt} = x_t + v * dt
             x_t['pose'] = x_t['pose'] + (velocity['pose'] * dt)
             x_t['trans'] = x_t['trans'] + (velocity['trans'] * dt)
-            
-            if (step + 1) % 20 == 0 or step == num_steps - 1:
-                print(f"   Step {step + 1:03d}/{num_steps} (t={t_val + dt:.2f}) completed.")
                 
-    print("Generation complete! Reached t=1.0")
     return x_t
 
 

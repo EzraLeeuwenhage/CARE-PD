@@ -107,11 +107,18 @@ def plot_pd_feature_bars(df, output_dir):
         means = []
         stds = []
         
-        # Calculate stats per class grouping
+        # calculate stats per class
         for label in labels:
-            subset = df[df["Class_Label"] == label][key]
-            means.append(np.nanmean(subset))
-            stds.append(np.nanstd(subset))
+            # Extract just this class and metric, dropping all NaNs immediately
+            subset = df[df["Class_Label"] == label][key].dropna()
+            
+            # If the entire subset was NaNs, avoid crashing script
+            if subset.empty:
+                means.append(np.nan)
+                stds.append(np.nan)
+            else:
+                means.append(np.mean(subset))
+                stds.append(np.std(subset))
 
         x_pos = np.arange(len(labels))
         colors = sns.color_palette("muted", n_colors=len(labels))
@@ -168,7 +175,7 @@ def plot_sequence_length_distribution(df, output_dir):
     plt.close()
 
 if __name__ == "__main__":
-    pkl_path = Path("thesis/data/processed/evaluation/gt_h36m_distributions.pkl")
+    pkl_path = Path("thesis\data\processed\evaluation\gen_h36m_distributions.pkl")
     output_dir = Path("thesis/visualizations")
     
     output_dir.mkdir(parents=True, exist_ok=True)

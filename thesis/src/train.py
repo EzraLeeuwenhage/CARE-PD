@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
 from pathlib import Path
+
 from thesis.src.model import FlowMatchingMLP
 from thesis.src.dataloader import get_dataloader
 from thesis.src.generate_prior import generate_prior_from_prefix
@@ -14,8 +15,12 @@ def load_config(config_path=CONFIG_PATH):
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
-def train(model, dataloader, cfg):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def train(model, dataloader, cfg, device=None):
+    """
+    Modular training loop. Can be called from run_pipeline.py or executed directly.
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on device: {device}")
     
     model = model.to(device)
@@ -24,7 +29,11 @@ def train(model, dataloader, cfg):
     epochs = cfg['training']['epochs']
     loss_weight = cfg['training']['loss_weight']
     
-    save_path = Path(cfg['training']['save_path'])
+    if 'paths' in cfg and 'weights' in cfg['paths']:
+        save_path = Path(cfg['paths']['weights'])
+    else:
+        save_path = Path(cfg['training']['save_path'])
+        
     save_path.parent.mkdir(parents=True, exist_ok=True)
     
     model.train()
@@ -83,6 +92,7 @@ def train(model, dataloader, cfg):
     # save model params
     torch.save(model.state_dict(), save_path)
     print(f"\nTraining complete. Model saved to {save_path}")
+
 
 if __name__ == "__main__":
     cfg = load_config()

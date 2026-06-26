@@ -1,4 +1,21 @@
 """ TODO: cite care pd repo for original code, changes marked with 'Adapted' """
+
+# patch deprecated 'chumpy' package for compatibility with python 3.11+
+import inspect
+if not hasattr(inspect, 'getargspec'):
+    inspect.getargspec = inspect.getfullargspec
+
+import numpy as np
+if not hasattr(np, 'bool'):
+    np.bool = np.bool_
+    np.int = int
+    np.float = float
+    np.complex = complex
+    np.object = object
+    np.unicode = str
+    np.str = str
+
+
 import os
 import torch
 import joblib
@@ -516,6 +533,83 @@ def main_world(cfg):
     np.savez(cfg.OUT_PATH_world, **result)
     print(f"Number of sqeuences in world cooridnates: {len(result)}")
 
+def main_world_only(cfg):
+    """Streamlined function to extract 3D world coordinates and skip all camera/image projections."""
+    if cfg.slope_correction:
+        ext = '_slopeCorrected'
+    else:
+        ext = ''
+        
+    base_name = cfg.DATA_DIR.stem
+    cfg.OUT_PATH_world = cfg.OUT_PATH / f'{base_name}_3d_world{ext}.npz'
+    
+    h36m_regressor = torch.tensor(np.load(cfg.H36M_J_REG), dtype=torch.float32).to(_DEVICE)
+    smpl_model = SMPL(model_path=cfg.MODEL_PATH, num_betas=10).to(_DEVICE)
+    
+    all_smpls = joblib.load(cfg.DATA_DIR)
+    result_world = dict()
+    
+    for subject_id in tqdm(all_smpls, desc=f"Converting {base_name} to 3D World Coords"):
+        for walk_id in all_smpls[subject_id]:
+            smpl_data = all_smpls[subject_id][walk_id]
+            if 'Trimmed' in walk_id:
+                continue
+
+            down_sample_rate = max(1, int(cfg.fps / cfg.exfps))
+            
+            for down in range(down_sample_rate):
+                walk_name = f"{subject_id}__{walk_id}" if down_sample_rate == 1 else f"{subject_id}__{walk_id}_down{down}"
+                if smpl_data['pose'].shape[0] < 30:
+                    continue
+                    
+                out_world = generate_smpl_in_world(smpl_model, smpl_data, down_sample_rate, down)
+                vertices_world = out_world.vertices 
+                h36m_joints_world = vertices2joints(h36m_regressor, vertices_world).cpu().detach().numpy()
+                
+                if cfg.slope_correction:
+                    h36m_joints_world = transform_seq_so_it_has_no_slope_h36m(h36m_joints_world, n_frames_est_mov_dir=15, window_size=90, polynomial = 4)
+                
+                '''Put on Floor'''
+                floor_height = h36m_joints_world.min(axis=0).min(axis=0)[1]
+                h36m_joints_world[:, :, 1] -= floor_height
+                
+                '''XZ at origin'''
+                root_pos_init = h36m_joints_world[0]
+                root_pose_init_xz = root_pos_init[0] * np.array([1, 0, 1])
+                h36m_joints_world = h36m_joints_world - root_pose_init_xz
+                
+                '''All initially face Z+'''
+                r_hip, l_hip, sdr_r, sdr_l = cfg.face_joint_indx
+                across1 = root_pos_init[r_hip] - root_pos_init[l_hip]
+                across2 = root_pos_init[sdr_r] - root_pos_init[sdr_l]
+                across = across1 + across2
+                across = across / np.sqrt((across ** 2).sum(axis=-1))[..., np.newaxis]
+                forward_init = np.cross(np.array([[0, 1, 0]]), across, axis=-1)
+                forward_init = forward_init / np.sqrt((forward_init ** 2).sum(axis=-1))[..., np.newaxis]
+                
+                target_for_world = np.array([[0, 0, 1]])
+                root_quat_init = qbetween_np(forward_init, target_for_world)
+                root_quat_init = np.ones(h36m_joints_world.shape[:-1] + (4,)) * root_quat_init
+                h36m_joints_world = qrot_np(root_quat_init, h36m_joints_world)
+                
+                '''Correct for curved walking direction'''
+                if cfg.db in ['T-SDU-PD', 'PD-GaM', 'Custom_Generations']:
+                    first_frame = h36m_joints_world[0, 0]
+                    middle_frame_idx = h36m_joints_world.shape[0] // 2
+                    middle_frame = h36m_joints_world[middle_frame_idx, 0]
+                    
+                    walking_direction = middle_frame - first_frame
+                    walking_direction[1] = 0 
+                    if np.linalg.norm(walking_direction) > 1e-5:
+                        walking_direction = walking_direction / np.linalg.norm(walking_direction) 
+                        correction_quat = qbetween_np(walking_direction[np.newaxis, :], target_for_world)
+                        correction_quat = np.ones(h36m_joints_world.shape[:-1] + (4,)) * correction_quat
+                        h36m_joints_world = qrot_np(correction_quat, h36m_joints_world)
+                
+                result_world[walk_name] = h36m_joints_world
+
+    np.savez(cfg.OUT_PATH_world, **result_world)
+    return cfg.OUT_PATH_world
 
 def convert_smpl_to_h36m(input_filename):
     """Wrapper for SMPL to H36M conversion.
@@ -551,11 +645,8 @@ def convert_smpl_to_h36m(input_filename):
     cfg.W = 1000
     
     os.makedirs(cfg.OUT_PATH, exist_ok=True)
-    
-    print('Side view right')
-    main_world2cam2img_custom_cm(cfg, view='sideright')
-    print('Back view right')
-    main_world2cam2img_custom_cm(cfg, view='backright')
+    out_path = main_world_only(cfg)
+    return out_path
 
 
 if __name__ == "__main__":

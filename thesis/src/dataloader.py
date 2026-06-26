@@ -23,12 +23,19 @@ class SMPL6DDataset(Dataset):
         with np.load(self.cfg['data']['smpl_translations_path'], allow_pickle=True) as npz:
             self.trans_data = {k: np.array(v) for k, v in npz.items()}
 
-        search_str = f"{self.cfg['data']['patient_prefix']}__"
-        self.valid_keys = [k for k in self.pose_data.keys() if k.startswith(search_str)]
+        # Check for specific patient prefix or load all data
+        patient_prefix = self.cfg['data'].get('patient_prefix')
         
-        print(f"Found {len(self.valid_keys)} valid keys for prefix '{self.cfg['data']['patient_prefix']}' in the dataset.")
+        if not patient_prefix or str(patient_prefix).lower() == 'all':
+            self.valid_keys = list(self.pose_data.keys())
+            print(f"Using full dataset. Found {len(self.valid_keys)} total valid keys.")
+        else:
+            search_str = f"{patient_prefix}__"
+            self.valid_keys = [k for k in self.pose_data.keys() if k.startswith(search_str)]
+            print(f"Found {len(self.valid_keys)} valid keys for prefix '{patient_prefix}' in the dataset.")
+            
         if not self.valid_keys:
-            raise ValueError(f"No keys found for prefix {search_str}")
+            raise ValueError(f"No keys found for prefix: {patient_prefix}")
         
         # use sliding windows to build index map
         self.window_indices = []
