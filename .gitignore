@@ -18,3 +18,6 @@ pretext/momask/checkpoints/t2m/text_mot_match/model/finest.tar
 *.json
 *.pth
 *.png
+
+# ignore script for syncing code to gitlab repository
+sync_to_gitlab.bat
