@@ -16,6 +16,10 @@ def main():
     parser.add_argument('-f', '--format')
     parser.add_argument('-fps', '--fps', default=30, type=int)
     parser.add_argument('-p', '--projection', default='3d', type=str)
+    
+    # allow specifying a single sequence by name
+    parser.add_argument('-k', '--key', default=None, type=str, help='Specify a single sequence key to visualize')
+    
     args = parser.parse_args()
     print(args)
     
@@ -34,9 +38,20 @@ def main():
         fname = Path(args.npypath).name
     else:
         raise NotImplementedError('Must supply either -b or -n option as source file path')
-    print(f'There are {len(seqs)} sequences.')
-    print(f'The average number of frames per clip is {np.mean([len(seqs[x]) for x in seqs])}')
+        
+    print(f'There are {len(seqs)} sequences in the loaded file.')
 
+    # handle specific sequence key input
+    if args.key:
+        if args.key in seqs:
+            print(f"\nShowing specific sequence: {args.key}")
+            seqs = {args.key: seqs[args.key]}
+        else:
+            print(f"\nError: Sequence '{args.key}' not found in the dataset!")
+            print(f"First 5 available keys: {list(seqs.keys())[:5]}")
+            return
+    else:
+        print(f'The average number of frames per clip is {np.mean([len(seqs[x]) for x in seqs])}')
 
     for name in seqs.keys():
         if name.endswith("_frame_ids"): continue
@@ -57,13 +72,8 @@ def main():
         else:
             invert = None
             minmax = None
+            
         visualize_sequence(seq, name + f'\n from {fname}', show_joint_indexes=True, joint_paths=skel_format, projection=args.projection, fps=args.fps, invert=invert, minmax=minmax, save_gif=False)
         
-        
-    
 if __name__ == '__main__':
     main()
-
-# python utility/viz_seqs.py -n assets/datasets/h36m/BMCLab/h36m_3d_world2cam2img_sideright_floorXZZplus_30f_or_longer.npz  -f h36m -p 2d
-
-# python utility/viz_seqs.py -n assets/datasets/h36m/BMCLab/h36m_3d_world_floorXZZplus_30f_or_longer.npz  -f h36m
