@@ -67,24 +67,25 @@ circle_pts = np.array([radius * (np.cos(theta) * u + np.sin(theta) * v) + shift 
 ax.plot(circle_pts[:, 0], circle_pts[:, 1], circle_pts[:, 2], color='goldenrod', linewidth=1.5, linestyle='--', alpha=0.6)
 
 # Draw the rotation arc
-t_arc = np.linspace(0, angle_rad, 50)
+start_angle = np.pi / 0.55
+t_arc = np.linspace(start_angle, start_angle + angle_rad, 50)
 arc_pts = np.array([radius * (np.cos(theta) * u + np.sin(theta) * v) + shift for theta in t_arc])
 ax.plot(arc_pts[:, 0], arc_pts[:, 1], arc_pts[:, 2], color='goldenrod', linewidth=3)
-ax.scatter(*arc_pts[-1], color='goldenrod', s=60, marker='>') 
+ax.scatter(*arc_pts[-1], color='goldenrod', s=30, marker='>') 
 
 tip_pos = axis_hat * (axis_length + 0.1)
 ax.text(tip_pos[0], tip_pos[1], tip_pos[2], r'$\hat{\omega}$', color='forestgreen', fontsize=20, fontweight='bold')
 
-mid_angle = angle_rad / 2
+mid_angle = start_angle + (angle_rad / 2)
 label_offset_vec = (np.cos(mid_angle) * u + np.sin(mid_angle) * v)
-label_pos = (radius * 1.3) * label_offset_vec + shift
+label_pos = (radius * 1.8) * label_offset_vec + shift
 ax.text(label_pos[0], label_pos[1], label_pos[2], r'$||\vec{\omega}||$', color='goldenrod', fontsize=18, fontweight='bold')
 
 # Formatting
 ax.set_xlim([-1.5, 1.5])
 ax.set_ylim([-1.5, 1.5])
 ax.set_zlim([-1.5, 1.5])
-# ax.set_axis_off()
+ax.set_axis_off()
 ax.set_title('Axis-Angle Representation', fontsize=16, fontweight='bold')
 
 ax.view_init(elev=20, azim=45)
