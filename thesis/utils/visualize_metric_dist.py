@@ -141,41 +141,64 @@ def plot_pd_feature_bars(df, output_dir):
 # SEQUENCE LENGTH DISTRIBUTION
 # ---------------------------------------------------------
 def plot_sequence_length_distribution(df, output_dir):
-    """Plots a histogram of the raw sequence lengths across the dataset."""
     df_clean = df.dropna(subset=["sequence_length"])
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     
-    raw_lengths = df_clean[df_clean["Class_ID"] == "overall"]
-    
-    sns.histplot(data=raw_lengths, x="sequence_length", bins=20, kde=True, ax=axes[0], color="cornflowerblue", edgecolor="black")
-    
-    mean_len = raw_lengths["sequence_length"].mean()
-    median_len = raw_lengths["sequence_length"].median()
-    N = len(raw_lengths)
-    
-    axes[0].set_title(f"Distribution of Sequence Lengths (N={N} seqs)", fontsize=14, fontweight='bold', pad=10)
-    axes[0].set_xlabel("Sequence Length (Frames)", fontsize=12)
-    axes[0].set_ylabel("Frequency", fontsize=12)
-    
-    axes[0].axvline(mean_len, color='red', linestyle='dashed', linewidth=2, label=f'Mean: {mean_len:.1f}')
-    axes[0].axvline(median_len, color='green', linestyle='dotted', linewidth=2, label=f'Median: {median_len:.1f}')
-    
-    axes[0].grid(axis='y', linestyle='--', alpha=0.7)
-    axes[0].legend()
+    if df_clean.empty:
+        print("No sequence length data found to plot.")
+        return
 
-    class_lengths = df_clean[df_clean["Class_ID"] != "overall"]
+    # overall distribution
+    overall_df = df_clean[df_clean["Class_ID"] == "overall"]
     
-    sns.kdeplot(data=class_lengths, x="sequence_length", hue="Class_Label", fill=True, alpha=0.3, ax=axes[1], common_norm=False, palette="muted", linewidth=2)
+    plt.figure(figsize=(8, 5))
+    sns.histplot(data=overall_df, x="sequence_length", bins=20, kde=True, color="cornflowerblue", edgecolor="black")
     
-    axes[1].set_title("Sequence Lengths by Severity Class", fontsize=14, fontweight='bold', pad=10)
-    axes[1].set_xlabel("Sequence Length (Frames)", fontsize=12)
-    axes[1].set_ylabel("Density", fontsize=12)
-    axes[1].grid(axis='y', linestyle='--', alpha=0.7)
-
+    mean_len = overall_df["sequence_length"].mean()
+    median_len = overall_df["sequence_length"].median()
+    N = len(overall_df)
+    
+    plt.title(f"Overall Sequence Lengths (N={N})", fontsize=14, fontweight='bold', pad=10)
+    plt.xlabel("Sequence Length (Frames)", fontsize=12)
+    plt.ylabel("Frequency", fontsize=12)
+    plt.axvline(mean_len, color='red', linestyle='dashed', linewidth=2, label=f'Mean: {mean_len:.1f}')
+    plt.axvline(median_len, color='green', linestyle='dotted', linewidth=2, label=f'Median: {median_len:.1f}')
+    plt.legend()
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
     plt.tight_layout()
+    plt.savefig(output_dir / "00a_sequence_length_overall.png", dpi=300)
+    plt.close()
+
+    # separate distributions per class
+    class_df = df_clean[df_clean["Class_ID"] != "overall"]
+    classes = sorted(class_df["Class_ID"].unique())
     
-    out_path = output_dir / "00_sequence_length_distribution.png"
-    plt.savefig(out_path, dpi=300)
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    axes_flat = axes.flatten()
+    
+    colors = sns.color_palette("muted", n_colors=len(classes))
+
+    for idx, cls in enumerate(classes):
+        ax = axes_flat[idx]
+        subset = class_df[class_df["Class_ID"] == cls]
+        
+        sns.histplot(data=subset, x="sequence_length", bins=15, kde=True, ax=ax, color=colors[idx], edgecolor="black")
+        
+        c_mean = subset["sequence_length"].mean()
+        c_median = subset["sequence_length"].median()
+        c_n = len(subset)
+        
+        ax.set_title(f"Class {cls} (N={c_n})", fontsize=12, fontweight='bold')
+        ax.set_xlabel("Sequence Length (Frames)", fontsize=10)
+        ax.set_ylabel("Frequency", fontsize=10)
+        
+        ax.axvline(c_mean, color='red', linestyle='dashed', linewidth=1.5, label=f'Mean: {c_mean:.1f}')
+        ax.axvline(c_median, color='green', linestyle='dotted', linewidth=1.5, label=f'Median: {c_median:.1f}')
+        ax.legend()
+        ax.grid(axis='y', linestyle='--', alpha=0.7)
+
+    plt.suptitle("Sequence Length Distributions by Severity Class", fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.savefig(output_dir / "00b_sequence_length_per_class.png", dpi=300, bbox_inches='tight')
     plt.close()
 
 if __name__ == "__main__":
