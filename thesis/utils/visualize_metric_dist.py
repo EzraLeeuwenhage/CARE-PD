@@ -1,4 +1,5 @@
 import pickle
+import argparse
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
@@ -141,33 +142,36 @@ def plot_pd_feature_bars(df, output_dir):
 # ---------------------------------------------------------
 def plot_sequence_length_distribution(df, output_dir):
     """Plots a histogram of the raw sequence lengths across the dataset."""
+    df_clean = df.dropna(subset=["sequence_length"])
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     
-    # We only need the "Overall" subset to avoid double-counting sequences
-    raw_lengths = df[df["Class_ID"] == "overall"]["sequence_length"].dropna()
+    raw_lengths = df_clean[df_clean["Class_ID"] == "overall"]
     
-    if len(raw_lengths) == 0:
-        print("No sequence length data found to plot.")
-        return
-
-    plt.figure(figsize=(8, 5))
+    sns.histplot(data=raw_lengths, x="sequence_length", bins=20, kde=True, ax=axes[0], color="cornflowerblue", edgecolor="black")
     
-    # Plot histogram with a density curve
-    sns.histplot(raw_lengths, bins=20, kde=True, color="cornflowerblue", edgecolor="black")
-    
-    mean_len = np.mean(raw_lengths)
-    median_len = np.median(raw_lengths)
+    mean_len = raw_lengths["sequence_length"].mean()
+    median_len = raw_lengths["sequence_length"].median()
     N = len(raw_lengths)
     
-    plt.title(f"Distribution of Sequence Lengths (N={N} seqs)", fontsize=14, fontweight='bold', pad=10)
-    plt.xlabel("Sequence Length (Frames)", fontsize=12)
-    plt.ylabel("Frequency", fontsize=12)
+    axes[0].set_title(f"Distribution of Sequence Lengths (N={N} seqs)", fontsize=14, fontweight='bold', pad=10)
+    axes[0].set_xlabel("Sequence Length (Frames)", fontsize=12)
+    axes[0].set_ylabel("Frequency", fontsize=12)
     
-    # Add vertical lines for Mean and Median context
-    plt.axvline(mean_len, color='red', linestyle='dashed', linewidth=2, label=f'Mean: {mean_len:.1f}')
-    plt.axvline(median_len, color='green', linestyle='dotted', linewidth=2, label=f'Median: {median_len:.1f}')
+    axes[0].axvline(mean_len, color='red', linestyle='dashed', linewidth=2, label=f'Mean: {mean_len:.1f}')
+    axes[0].axvline(median_len, color='green', linestyle='dotted', linewidth=2, label=f'Median: {median_len:.1f}')
     
-    plt.grid(axis='y', linestyle='--', alpha=0.7)
-    plt.legend()
+    axes[0].grid(axis='y', linestyle='--', alpha=0.7)
+    axes[0].legend()
+
+    class_lengths = df_clean[df_clean["Class_ID"] != "overall"]
+    
+    sns.kdeplot(data=class_lengths, x="sequence_length", hue="Class_Label", fill=True, alpha=0.3, ax=axes[1], common_norm=False, palette="muted", linewidth=2)
+    
+    axes[1].set_title("Sequence Lengths by Severity Class", fontsize=14, fontweight='bold', pad=10)
+    axes[1].set_xlabel("Sequence Length (Frames)", fontsize=12)
+    axes[1].set_ylabel("Density", fontsize=12)
+    axes[1].grid(axis='y', linestyle='--', alpha=0.7)
+
     plt.tight_layout()
     
     out_path = output_dir / "00_sequence_length_distribution.png"
@@ -175,13 +179,18 @@ def plot_sequence_length_distribution(df, output_dir):
     plt.close()
 
 if __name__ == "__main__":
-    pkl_path = Path("thesis\data\processed\evaluation\gen_h36m_distributions.pkl")
-    output_dir = Path("thesis/visualizations")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-i", "--input", type=str, default="thesis/data/processed/evaluation/gt_h36m_distributions.pkl")
+    parser.add_argument("-o", "--output", type=str, default="thesis/visualizations")
+    args = parser.parse_args()
+
+    pkl_path = Path(args.input)
+    output_dir = Path(args.output)
     
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if not pkl_path.exists():
-        print(f"Could not find ground truth file at {pkl_path}")
+        print(f"Could not find file at {pkl_path}")
         print("Please run evaluate.py first to generate this file.")
     else:
         print("Loading cached distributions...")
