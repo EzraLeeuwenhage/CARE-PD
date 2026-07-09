@@ -3,7 +3,7 @@ import subprocess
 import torch
 from pathlib import Path
 from thesis.src.dataloader import get_dataloader
-from thesis.data.raw.data_conversion_utils import build_smpl_pkl_from_6d_smpl
+from thesis.utils.data_conversion_utils import build_smpl_pkl_from_6d_smpl
 from thesis.care_pd.smpl2h36m import convert_smpl_to_h36m
 
 

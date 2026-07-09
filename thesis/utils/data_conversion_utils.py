@@ -76,9 +76,10 @@ def build_smpl_pkl_from_6d_smpl(generated_pose_6d, generated_trans, output_filep
     print(f"Saved generated SMPL data to: {out_path}")
 
 
-def validate_reconstruction():
-    """Validates that 6D -> SMPL reverse conversion is lossless by comparing to raw .pkl data."""
+def validate_reconstruction(num_samples=100):
+    """Validates that 6D -> SMPL reverse conversion is lossless over a random sample of sequences."""
     import pickle
+    import random
 
     print("Loading validation data...")
     pkl_path = Path("thesis/data/raw/PD-GaM/PD-GaM.pkl")
@@ -88,55 +89,71 @@ def validate_reconstruction():
         pkl_data = pickle.load(f)
     npz_data = np.load(npz_path, allow_pickle=True)
     
-    # Just pick some key for testing
-    test_key = npz_data.files[0]
-    print(f"\nValidating key: {test_key}")
+    all_keys = npz_data.files
+    # Ensure we don't sample more keys than actually exist
+    num_samples = min(num_samples, len(all_keys))
+    sample_keys = random.sample(all_keys, num_samples)
     
-    # Parse key to find raw data sequence
-    parts = test_key.split('__')
-    subject_id = parts[0]
-    rest = parts[1]
+    print(f"\nValidating {num_samples} randomly selected sequences...")
     
-    # Only works for PD-GaM (no framerate conversion) for now
-    walk_id = rest
-    down = 0
-    down_sample_rate = 1
+    total_mae = []
+    max_errors = []
+    skipped = 0
+    
+    for key in sample_keys:
+        # Robust parsing for standard and downsampled keys
+        parts = key.split('__')
+        subject_id = parts[0]
+        rest = parts[1]
         
-    pose_6d = npz_data[test_key]
-    smpl_hat = convert_6d_to_smpl(pose_6d)  # Shape: (T, 24, 3)
-    
-    # Get original raw SMPL data for the same sequence
-    raw_pose = pkl_data[subject_id][walk_id]['pose']  # Shape: (T, 72)
-    raw_pose = raw_pose.reshape(-1, 24, 3)  # Reshape to match our format
-    
-    # Apply temporal slicing to match frame rate if needed
-    raw_pose_sliced = raw_pose[down::down_sample_rate, ...]
-    
-    # Handle any frame mismatch, drop 25th empty joint data if present
-    min_frames = min(smpl_hat.shape[0], raw_pose_sliced.shape[0])
-    smpl_hat = smpl_hat[:min_frames, :24, :] 
-    raw_pose_sliced = raw_pose_sliced[:min_frames, :24, :]
-    
-    # Calculate error with rotation matrices, which accounts for multiple equivalent axis-angle representations
-    R_hat = R.from_rotvec(smpl_hat.reshape(-1, 3)).as_matrix()
-    R_raw = R.from_rotvec(raw_pose_sliced.reshape(-1, 3)).as_matrix()
-    
-    print(f"\nValidation Results")
-    print(f"Reconstructed Shape: {smpl_hat.shape}")
-    print(f"Original Sliced Shape: {raw_pose_sliced.shape}")
-    
-    # Matrix error is true physical difference in 3D space
-    matrix_mae = np.mean(np.abs(R_hat - R_raw))
-    matrix_max = np.max(np.abs(R_hat - R_raw))
-    
-    print(f"Matrix Mean Absolute Error: {matrix_mae:.8f}")
-    print(f"Matrix Max Absolute Error:  {matrix_max:.8f}")
-    
-    if matrix_mae < 1e-4:
-        print("\nSUCCESS: Reverse conversion is practically lossless.")
-    else:
-        print("\nFAIL: Error is higher than allowed.")
+        if '_down' in rest:
+            walk_id, down_str = rest.rsplit('_down', 1)
+            down = int(down_str)
+        else:
+            walk_id = rest
+            down = 0
+            
+        down_sample_rate = 1 # PD-GaM default
+            
+        pose_6d = npz_data[key]
+        smpl_hat = convert_6d_to_smpl(pose_6d)  # Shape: (T, 24, 3)
+        
+        try:
+            raw_pose = pkl_data[subject_id][walk_id]['pose']
+        except KeyError:
+            print(f"Warning: Could not find '{subject_id} - {walk_id}' in .pkl. Skipping.")
+            skipped += 1
+            continue
 
+        raw_pose = raw_pose.reshape(-1, 24, 3)
+        raw_pose_sliced = raw_pose[down::down_sample_rate, ...]
+        
+        min_frames = min(smpl_hat.shape[0], raw_pose_sliced.shape[0])
+        smpl_hat = smpl_hat[:min_frames, :24, :] 
+        raw_pose_sliced = raw_pose_sliced[:min_frames, :24, :]
+        
+        # Calculate error with rotation matrices
+        R_hat = R.from_rotvec(smpl_hat.reshape(-1, 3)).as_matrix()
+        R_raw = R.from_rotvec(raw_pose_sliced.reshape(-1, 3)).as_matrix()
+        
+        matrix_mae = np.mean(np.abs(R_hat - R_raw))
+        matrix_max = np.max(np.abs(R_hat - R_raw))
+        
+        total_mae.append(matrix_mae)
+        max_errors.append(matrix_max)
+        
+    overall_mean_mae = np.mean(total_mae)
+    overall_max_error = np.max(max_errors)
+    
+    print(f"\n--- Aggregated Validation Results ({len(total_mae)} sequences) ---")
+    print(f"Sequences Skipped (Not Found):      {skipped}")
+    print(f"Overall Matrix Mean Absolute Error: {overall_mean_mae:.8f}")
+    print(f"Absolute Worst-Case Max Error:      {overall_max_error:.8f}")
+    
+    if overall_mean_mae < 1e-4 and overall_max_error < 1e-3:
+        print("\nSUCCESS: Reverse conversion is practically lossless across the dataset.")
+    else:
+        print("\nFAIL: Error is higher than allowed threshold.")
 
 if __name__ == "__main__":
-    validate_reconstruction()
+    validate_reconstruction(num_samples=250)
