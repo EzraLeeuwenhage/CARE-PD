@@ -122,6 +122,8 @@ def load_patient_walks(filepath, patient_prefix="003"):
     except Exception as e:
         print(f"Error loading file: {e}")
         return []
+    
+    print(f"Total sequences in dataset: {len(data)}")
 
     patient_walks = []
     
@@ -173,6 +175,9 @@ def load_smpl_walks(pose_filepath, trans_filepath, patient_prefix="003"):
 
     if pose_data is None or trans_data is None:
         return []
+    
+    print(f"Total pose sequences: {len(pose_data)}")
+    print(f"Total translation sequences: {len(trans_data)}")
 
     patient_walks = []
     
@@ -225,3 +230,69 @@ if patient_003_data:
         print(f"  {clip['clip_id']:<28} | {clip['frames']:<8} | {pose_shape:<22} | {trans_shape}")
 else:
     print("No sequences found. Please double-check the filepaths and patient prefix.")
+
+def analyze_long_sequences(npz_filepath, raw_pkl_data, frame_threshold=300):
+    """
+    Finds sequences longer than a specific threshold and cross-references 
+    the raw .pkl data to tally them by UPDRS_GAIT severity class.
+    """
+    print(f"\n--- Analyzing sequences with > {frame_threshold} frames ---")
+    
+    # Load the flat H36M dictionary
+    try:
+        npz_data = np.load(npz_filepath, allow_pickle=True)
+        if hasattr(npz_data, 'files') and len(npz_data.files) == 1 and npz_data.files[0] == 'arr_0':
+            npz_data = npz_data['arr_0'].item()
+    except Exception as e:
+        print(f"Error loading {npz_filepath}: {e}")
+        return
+
+    long_seqs = []
+    # Initialize counters for the 4 severity classes (plus an unknown fallback)
+    severity_counts = {0: 0, 1: 0, 2: 0, 3: 0, "Unknown": 0}
+
+    for clip_id, tensor in npz_data.items():
+        num_frames = tensor.shape[0]
+        
+        if num_frames > frame_threshold:
+            # The clip_id is formatted as "PatientID__WalkID"
+            parts = clip_id.split('__')
+            severity = "Unknown"
+            
+            if len(parts) == 2:
+                patient_id = parts[0]
+                walk_id = parts[1]
+                
+                # Dig into the raw pickle data to find the severity score
+                if patient_id in raw_pkl_data and walk_id in raw_pkl_data[patient_id]:
+                    walk_entry = raw_pkl_data[patient_id][walk_id]
+                    if 'UPDRS_GAIT' in walk_entry:
+                        severity = int(walk_entry['UPDRS_GAIT'])
+            
+            long_seqs.append((clip_id, num_frames, severity))
+            
+            # Increment the corresponding severity bucket
+            if severity in severity_counts:
+                severity_counts[severity] += 1
+            else:
+                severity_counts["Unknown"] += 1
+
+    # Print Summary Output
+    print(f"Total sequences with > {frame_threshold} frames: {len(long_seqs)}")
+    print("\nBreakdown by Severity Class (UPDRS_GAIT):")
+    for sev in [0, 1, 2, 3, "Unknown"]:
+        count = severity_counts[sev]
+        if count > 0 or sev != "Unknown":
+            print(f"  Class {sev}: {count} sequences")
+            
+    # Print Detailed Table sorted by length
+    print("\nList of Long Sequences:")
+    print(f"{'Clip ID':<35} | {'Frames':<8} | {'Severity'}")
+    print("-" * 60)
+    
+    long_seqs.sort(key=lambda x: x[1], reverse=True)
+    for cid, frames, sev in long_seqs:
+        print(f"{cid:<35} | {frames:<8} | {sev}")
+
+# Execute the analysis using your already-loaded variables
+analyze_long_sequences(npz_path, data, frame_threshold=300)

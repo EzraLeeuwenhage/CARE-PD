@@ -6,7 +6,7 @@ import os
 import argparse
 import pickle
 from pathlib import Path
-from visualize_skel_walk_func import visualize_sequence, h36m_joint_paths, SMPL_joint_paths, NTU_joint_paths, AMASS_joint_paths
+from thesis.care_pd.visualize_skel_walk_func import visualize_sequence, h36m_joint_paths, SMPL_joint_paths, NTU_joint_paths, AMASS_joint_paths
 
 def main():
     parser = argparse.ArgumentParser()
