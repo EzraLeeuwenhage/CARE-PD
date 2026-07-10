@@ -276,9 +276,8 @@ def main_world_only(cfg):
                 vertices_world = out_world.vertices 
                 h36m_joints_world = vertices2joints(h36m_regressor, vertices_world).cpu().detach().numpy()
                 
-                # TODO: always apply this? 
-                if cfg.slope_correction:
-                    h36m_joints_world = transform_seq_so_it_has_no_slope_h36m(h36m_joints_world, n_frames_est_mov_dir=15, window_size=90, polynomial = 4)
+                # Always apply slope correction for consistent heel strike detection
+                h36m_joints_world = transform_seq_so_it_has_no_slope_h36m(h36m_joints_world, n_frames_est_mov_dir=15, window_size=90, polynomial = 4)
 
                 '''Put on Floor'''
                 floor_height = h36m_joints_world.min(axis=0).min(axis=0)[1]
