@@ -1,14 +1,15 @@
-windowing:
-  total_window_size: 60
-  prefix_length: 15
-  step_size: 10
-
 data:
   num_joints: 24
   6d_smpl_path: "thesis/data/raw/PD-GaM/6D_SMPL/6D_SMPL_30f_or_longer.npz"
   smpl_translations_path: "thesis/data/raw/PD-GaM/6D_SMPL/6D_SMPL_30f_or_longer_translations.npz"
   patient_prefix: "all"
   severity_labels_path: "thesis/data/metadata/pd_gam_labels.json"
+
+windowing:
+  total_window_size: 60
+  prefix_length: 15
+  step_size: 10
+  min_z_travel: 0.5
 
 training:
   epochs: 500

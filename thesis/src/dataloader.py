@@ -16,6 +16,9 @@ class SMPL6DDataset(Dataset):
         self.window_size = self.cfg['windowing']['total_window_size']
         self.prefix_length = self.cfg['windowing']['prefix_length']
         self.step_size = self.cfg['windowing']['step_size']
+        
+        # Extract minimum z travel setting with a fallback default of 0.0
+        self.min_z_travel = self.cfg['windowing'].get('min_z_travel', 0.0)
 
         with np.load(self.cfg['data']['6d_smpl_path'], allow_pickle=True) as npz:
             self.pose_data = {k: np.array(v) for k, v in npz.items()}
@@ -40,22 +43,49 @@ class SMPL6DDataset(Dataset):
         # use sliding windows to build index map
         self.window_indices = []
         self.discarded_keys = []
+        
+        # track statistics on filtered out chunks
+        total_chunks_inspected = 0
+        
         for key in self.valid_keys:
             num_frames = self.pose_data[key].shape[0]
             
             if num_frames >= self.window_size:
                 for start_idx in range(0, num_frames - self.window_size + 1, self.step_size):
-                    self.window_indices.append((key, start_idx))
+                    total_chunks_inspected += 1
+                    end_idx = start_idx + self.window_size
+                    
+                    # Compute Z-distance travelled across this specific sequence chunk
+                    start_z = self.trans_data[key][start_idx, 2]
+                    end_z = self.trans_data[key][end_idx - 1, 2]
+                    z_travel = abs(end_z - start_z)
+                    
+                    if z_travel >= self.min_z_travel:
+                        self.window_indices.append((key, start_idx))
             else:
                 self.discarded_keys.append(key)
                     
-        print(f"Dataset initialized with {len(self.window_indices)} sequence chunks.")
+        print(f"Dataset initialized with {len(self.window_indices)} sequence chunks (Filtered out \
+              {total_chunks_inspected - len(self.window_indices)} chunks with < {self.min_z_travel}m Z-travel).")
         print(f"Discarded {len(self.discarded_keys)} keys due to insufficient sequence length: {self.discarded_keys}")
 
         # load severity labels registry
         with open(self.cfg['data']['severity_labels_path'], "r") as f:
             metadata = json.load(f)
             self.key_to_severity = metadata["key_to_severity"]
+
+    def get_sample_metadata(self, idx):
+        """Returns the source sequence key and frame offset for evaluation tracking."""
+        key, start_idx = self.window_indices[idx]
+        end_idx = start_idx + self.window_size
+        start_z = self.trans_data[key][start_idx, 2]
+        end_z = self.trans_data[key][end_idx - 1, 2]
+        return {
+            "sequence_key": key,
+            "start_frame": start_idx,
+            "end_frame": end_idx,
+            "z_travel_meters": abs(end_z - start_z)
+        }
 
     def __len__(self):
         return len(self.window_indices)
@@ -100,16 +130,3 @@ def get_dataloader(config_path=CONFIG_PATH):
         drop_last=True
     )
     return loader
-
-
-if __name__ == "__main__":
-    loader = get_dataloader()
-    
-    for batch_idx, (prefix, target, severity) in enumerate(loader):
-        print(f"\n--- Batch {batch_idx} ---")
-        print(f"Prefix Pose Shape:  {prefix['pose'].shape}")   # Expected: (B, 15, 24, 6)
-        print(f"Prefix Trans Shape: {prefix['trans'].shape}")  # Expected: (B, 15, 3)
-        print(f"Target Pose Shape:  {target['pose'].shape}")   # Expected: (B, 45, 24, 6)
-        print(f"Target Trans Shape: {target['trans'].shape}")  # Expected: (B, 45, 3)
-        print(f"Severity Scores: {severity}\n of shape: {severity.shape}")  # Expected: (B,)
-        break
