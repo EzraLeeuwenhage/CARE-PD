@@ -259,7 +259,7 @@ def main_world_only(cfg):
     result_world = dict()
     
     for subject_id in tqdm(all_smpls, desc=f"Converting {base_name} to 3D World Coords"):
-        for walk_id in all_smpls[subject_id]:
+        for walk_id in tqdm(all_smpls[subject_id], desc=f"Processing {subject_id}"):
             smpl_data = all_smpls[subject_id][walk_id]
             if 'Trimmed' in walk_id:
                 continue

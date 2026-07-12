@@ -130,3 +130,80 @@ def get_dataloader(config_path=CONFIG_PATH):
         drop_last=True
     )
     return loader
+
+
+if __name__ == "__main__":
+    from tqdm import tqdm
+    from pathlib import Path
+    from collections import Counter
+    import sys
+    import os
+    
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+    from thesis.utils.data_conversion_utils import build_smpl_pkl_from_6d_smpl
+    
+    config_path = CONFIG_PATH
+    with open(config_path, 'r') as f:
+        cfg = yaml.safe_load(f)
+        
+    output_dir = Path("thesis/data/processed/ground_truth_chunks")
+    smpl_output_path = output_dir / "SMPL" / "ground_truth.pkl"
+    labels_output_path = output_dir / "h36m" / "gt_labels.json"
+    
+    print(f"--- Generating Ground Truth Chunk Dataset ---")
+    print(f"Config path:   {config_path}")
+    print(f"Output SMPL:   {smpl_output_path}")
+    print(f"Output Labels: {labels_output_path}")
+    
+    dataset = SMPL6DDataset(config_path)
+    
+    # Instantiate a custom DataLoader that guarantees NO shuffling and NO dropped data
+    loader = DataLoader(
+        dataset,
+        batch_size=cfg['training']['batch_size'],
+        shuffle=False,   
+        drop_last=False, 
+        num_workers=cfg['training']['num_workers']
+    )
+    
+    all_gt_pose = []
+    all_gt_trans = []
+    all_severities = []
+    
+    for prefix, target, severity in tqdm(loader, desc="Extracting Chunks"):
+        # Concatenate prefix and target to restore the full continuous chunk
+        gt_pose = torch.cat([prefix['pose'], target['pose']], dim=1)
+        gt_trans = torch.cat([prefix['trans'], target['trans']], dim=1)
+        
+        all_gt_pose.append(gt_pose)
+        all_gt_trans.append(gt_trans)
+        all_severities.extend(severity.tolist())
+        
+    full_pose = torch.cat(all_gt_pose, dim=0)
+    full_trans = torch.cat(all_gt_trans, dim=0)
+    
+    print("\nSaving chunked data to SMPL .pkl format...")
+    smpl_output_path.parent.mkdir(parents=True, exist_ok=True)
+    build_smpl_pkl_from_6d_smpl(
+        generated_pose_6d=full_pose, 
+        generated_trans=full_trans, 
+        output_filepath=str(smpl_output_path), 
+        subject_id="GT", 
+        walk_prefix="gt"
+    )
+    
+    print("Saving severity labels to JSON...")
+    labels_output_path.parent.mkdir(parents=True, exist_ok=True)
+    labels_dict = {"key_to_severity": {}}
+    for i, sev in enumerate(all_severities):
+        labels_dict["key_to_severity"][f"GT__gt_{i:03d}"] = sev
+        
+    with open(labels_output_path, 'w') as f:
+        json.dump(labels_dict, f, indent=4)
+    
+    print("\nGround Truth Chunk Extraction Complete!")
+    print(f"Total 60-frame chunks extracted: {full_pose.shape[0]}")
+    
+    sev_counts = Counter(all_severities)
+    for severity in sorted(sev_counts.keys()):
+        print(f"  -> Class '{severity}': {sev_counts[severity]} chunks processed.")

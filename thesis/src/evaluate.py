@@ -39,27 +39,23 @@ class H36MEvaluator:
         for clip_id, tensor in data.items():
             # Handle generated data naming vs true data naming
             base_key = clip_id.split('_down')[0] if '_down' in clip_id else clip_id
-            # If it's a generated sequence, try to extract the original patient prefix
             base_key = base_key.replace('generated_walk_', '')
             
-            # Find matching severity
-            score = None
-            for reg_key, reg_score in key_to_severity.items():
-                if reg_key in base_key or base_key in reg_key:
-                    score = int(reg_score)
-                    break
-                    
-            if score is None:
-                continue # Skip if label cannot be resolved
+            if base_key in key_to_severity:
+                score = int(key_to_severity[base_key])
+            else:
+                print(f"Warning: Could not resolve severity for clip '{clip_id}' (base key: '{base_key}'). Skipping.")
+                continue # Skip if label has no score
                 
             if score not in subsets:
                 subsets[score] = []
                 
-            subsets[score].append(tensor)
+            # Store both the clip_id and the tensor as a tuple
+            subsets[score].append((clip_id, tensor))
             
         return subsets
 
-    def _extract_sequence_metrics(self, seq_tensor):
+    def _extract_sequence_metrics(self, seq_tensor, clip_id="Unknown"):
         """
         Extracts metrics + sequence length for a single sequence.
         Assumes seq_tensor shape is (T, 17, 3) and values are in meters.
@@ -89,15 +85,13 @@ class H36MEvaluator:
         metrics["mean_jerk"] = np.mean(np.linalg.norm(jerk, axis=-1))
 
         # Heel Strike Detection (to calculate other metrics)
-        # TODO: validate visually for high severity score sequences
         ankle_dist = np.linalg.norm(seq[:, self.L_ANKLE, :] - seq[:, self.R_ANKLE, :], axis=-1)
 
-        # TODO: nu 24/35 class 3 sequences valid, 11/35 get filtered out due to no heel strikes
         peaks, _ = find_peaks(ankle_dist, distance=8, prominence=0.005)
         
         # Return NaNs if no proper walking pattern in motion sequence
         if len(peaks) < 2:
-            print(f"  Warning: Sequence too short or no heel strikes detected (T={T}, peaks={len(peaks)}). Returning NaN metrics.")
+            print(f"  Warning: Sequence '{clip_id}' too short or no heel strikes detected (T={T}, peaks={len(peaks)}). Returning NaN metrics.")
             nan_metrics = ["floating", "foot_skating", "mean_step_length", "variance_step_length", 
                            "mean_walking_speed", "mean_vertical_foot_lifting", "mean_emos", "variance_emos"]
             for m in nan_metrics: metrics[m] = np.nan
@@ -214,8 +208,8 @@ class H36MEvaluator:
 
         # Process all sequences
         for severity, seq_list in grouped_sequences.items():
-            for seq in seq_list:
-                metrics = self._extract_sequence_metrics(seq)
+            for clip_id, seq in seq_list:
+                metrics = self._extract_sequence_metrics(seq, clip_id)
                 
                 # Only append if the sequence actually took steps (is not NaN)
                 if not np.isnan(metrics["mean_walking_speed"]):
@@ -246,9 +240,9 @@ class H36MEvaluator:
 
 if __name__ == "__main__":
     evaluator = H36MEvaluator(fps=30)
-    data_path = Path("thesis/data/raw/PD-GaM/h36m/h36m_3d_world_floorXZZplus_30f_or_longer.npz")
-    labels_path = Path("thesis/data/metadata/pd_gam_labels.json") 
-    output_path = Path("thesis/data/processed/evaluation/gt_h36m_distributions.pkl")
+    data_path = Path("thesis/data/processed/ground_truth_chunks/h36m/ground_truth_3d_world.npz")
+    labels_path = Path("thesis/data/processed/ground_truth_chunks/h36m/gt_labels.json") 
+    output_path = Path("thesis/data/processed/evaluation/gt_chunks_h36m_distributions.pkl")
 
     print(f"--- Generating Ground Truth H36M Evaluation Metrics ---")
     print(f"Data path:   {data_path}")
