@@ -5,8 +5,15 @@ from matplotlib import pyplot as plt
 import os
 import argparse
 import pickle
+import json
 from pathlib import Path
-from thesis.care_pd.visualize_skel_walk_func import visualize_sequence, h36m_joint_paths, SMPL_joint_paths, NTU_joint_paths, AMASS_joint_paths
+from thesis.care_pd.visualize_skel_walk_func import (
+    visualize_sequence, 
+    h36m_joint_paths, 
+    SMPL_joint_paths, 
+    NTU_joint_paths, 
+    AMASS_joint_paths
+)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -17,8 +24,10 @@ def main():
     parser.add_argument('-fps', '--fps', default=30, type=int)
     parser.add_argument('-p', '--projection', default='3d', type=str)
     
-    # allow specifying a single sequence by name
+    # custom arguments 
     parser.add_argument('-k', '--key', default=None, type=str, help='Specify a single sequence key to visualize')
+    parser.add_argument('-hs', '--heelstrikes', default=None, type=str, help='Path to the heel strikes JSON file')
+    parser.add_argument('-l', '--labels', default=None, type=str, help='Path to the severity labels JSON file')
     
     args = parser.parse_args()
     print(args)
@@ -41,7 +50,18 @@ def main():
         
     print(f'There are {len(seqs)} sequences in the loaded file.')
 
-    # handle specific sequence key input
+    hs_data = None
+    if args.heelstrikes:
+        with open(args.heelstrikes, 'r') as f:
+            hs_data = json.load(f)
+        print("Loaded heel strike tracking data.")
+
+    labels_data = None
+    if args.labels:
+        with open(args.labels, 'r') as f:
+            labels_data = json.load(f)["key_to_severity"]
+        print("Loaded severity labels data.")
+
     if args.key:
         if args.key in seqs:
             print(f"\nShowing specific sequence: {args.key}")
@@ -56,7 +76,17 @@ def main():
     for name in seqs.keys():
         if name.endswith("_frame_ids"): continue
         seq = seqs[name]
-        print(name)
+        
+        seq_severity = None
+        if labels_data:
+            base_key = name.split('_down')[0] if '_down' in name else name
+            base_key = base_key.replace('generated_walk_', '')
+            if base_key in labels_data:
+                seq_severity = labels_data[base_key]
+            print(f"{name} | Severity Class: {seq_severity}")
+        else:
+            print(name)
+
         joint_paths = {
             'h36m': h36m_joint_paths,
             'SMPL': SMPL_joint_paths,
@@ -73,7 +103,21 @@ def main():
             invert = None
             minmax = None
             
-        visualize_sequence(seq, name + f'\n from {fname}', show_joint_indexes=True, joint_paths=skel_format, projection=args.projection, fps=args.fps, invert=invert, minmax=minmax, save_gif=False)
+        seq_hs = hs_data.get(name) if hs_data else None
+            
+        visualize_sequence(
+            seq, 
+            name + f'\n from {fname}', 
+            show_joint_indexes=True, 
+            joint_paths=skel_format, 
+            projection=args.projection, 
+            fps=args.fps, 
+            invert=invert, 
+            minmax=minmax, 
+            save_gif=False, 
+            heel_strikes=seq_hs,
+            severity=seq_severity
+        )
         
 if __name__ == '__main__':
     main()

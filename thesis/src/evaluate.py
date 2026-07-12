@@ -95,11 +95,13 @@ class H36MEvaluator:
             nan_metrics = ["floating", "foot_skating", "mean_step_length", "variance_step_length", 
                            "mean_walking_speed", "mean_vertical_foot_lifting", "mean_emos", "variance_emos"]
             for m in nan_metrics: metrics[m] = np.nan
+            metrics["heel_strikes_info"] = []
             return metrics
 
         # Floating & Foot Skating (Evaluated at the exact moment of heel strikes)
         floats = []
         skates = []
+        hs_info = []
         horiz_vel = np.linalg.norm(np.diff(seq[:, :, [0, 2]], axis=0), axis=-1) * self.fps
         
         for p in peaks:
@@ -107,12 +109,20 @@ class H36MEvaluator:
             stance_idx = self.L_ANKLE if seq[p, self.L_ANKLE, 1] < seq[p, self.R_ANKLE, 1] else self.R_ANKLE
             # Floating: Y position of the planted foot
             floats.append(seq[p, stance_idx, 1])
-            # Skating: Horizontal velocity of the planted foot
+            
+            # Record exact frame, joint index, and 3D coordinate of the planted foot
+            hs_info.append({
+                "frame": int(p), 
+                "joint_idx": int(stance_idx), 
+                "coord": seq[p, stance_idx, :].tolist()
+            })
+            
             if p > 0:
                 skates.append(horiz_vel[p-1, stance_idx])
                 
         metrics["floating"] = np.mean(floats)
         metrics["foot_skating"] = np.mean(skates) if skates else np.nan
+        metrics["heel_strikes_info"] = hs_info
 
         # ---------------------------------------------------------
         # PD FEATURES
@@ -152,7 +162,7 @@ class H36MEvaluator:
 
         # Estimated Margin of Stability (eMoS)
         pelvis_x = seq[:, self.PELVIS, 0]
-        pelvis_y = np.mean(seq[:, self.PELVIS, 1]) # approximate leg length
+        pelvis_y = np.mean(seq[:, self.PELVIS, 1]) 
         pelvis_v_x = np.gradient(pelvis_x) * self.fps
 
         w0 = np.sqrt(9.81 / (pelvis_y + 1e-6))
@@ -206,27 +216,29 @@ class H36MEvaluator:
         for severity in grouped_sequences.keys():
             distributions[severity] = {k: [] for k in metric_keys}
 
-        # Process all sequences
+        heel_strikes_registry = {}
+
         for severity, seq_list in grouped_sequences.items():
             for clip_id, seq in seq_list:
                 metrics = self._extract_sequence_metrics(seq, clip_id)
                 
-                # Only append if the sequence actually took steps (is not NaN)
+                # Separate out the heel strike logging data from the distributions
+                heel_strikes_registry[clip_id] = metrics.pop("heel_strikes_info", [])
+                
                 if not np.isnan(metrics["mean_walking_speed"]):
                     for k in metric_keys:
                         distributions[severity][k].append(metrics[k])
                         distributions["overall"][k].append(metrics[k])
                         
-        # Convert lists to np arrays
         for group in distributions.keys():
             for k in metric_keys:
                 distributions[group][k] = np.array(distributions[group][k])
                 
-        return distributions
+        return distributions, heel_strikes_registry
 
     def evaluate_and_cache(self, npz_path, labels_path, cache_output_path):
-        """Process and save the raw distributions to a pickle file."""
-        distributions = self.process_dataset(npz_path, labels_path)
+        """Process and save the raw distributions and heel strike markers."""
+        distributions, heel_strikes_registry = self.process_dataset(npz_path, labels_path)
         
         out_path = Path(cache_output_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -234,7 +246,12 @@ class H36MEvaluator:
         with open(out_path, 'wb') as f:
             pickle.dump(distributions, f)
             
+        hs_out_path = Path(npz_path).parent / "heel_strikes.json"
+        with open(hs_out_path, 'w') as f:
+            json.dump(heel_strikes_registry, f, indent=4)
+            
         print(f"[Evaluator] Saved evaluation distributions to: {cache_output_path}")
+        print(f"[Evaluator] Saved heel strike detection data to: {hs_out_path}")
         return distributions
     
 
