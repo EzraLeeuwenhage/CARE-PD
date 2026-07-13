@@ -185,7 +185,7 @@ def visualize_sequence_3d(seq, name, show_joint_indexes=False, joint_paths=None,
                     j_idx = hs['joint_idx']
                     hx, hy, hz = seq[frame, j_idx, 0], seq[frame, j_idx, 1], seq[frame, j_idx, 2]
                     ax.scatter(hx, hy, hz, color='red', s=200, marker='*', zorder=10)
-                    ax.text(hx, hy, hz + 0.1, "HEEL STRIKE", color='red', fontweight='bold')
+                    # ax.text(hx, hy, hz + 0.1, "HEEL STRIKE", color='red', fontweight='bold')
 
     min_x, min_y, min_z = np.min(seq, axis=(0, 1))
     max_x, max_y, max_z = np.max(seq, axis=(0, 1))

@@ -20,7 +20,10 @@ class H36MEvaluator:
         self.R_SHOULDER = 14
         
         # Major bones for bone-length checks (pelvis - hips - knees - ankles)
-        self.major_bones = [(0,1), (1,2), (2,3), (0,4), (4,5), (5,6)] 
+        self.major_bones = [(0,1), (1,2), (2,3), (0,4), (4,5), (5,6)]
+
+        # heel strike detection params
+        self.MIN_FRAMES_BETWEEN_STEPS = 1
 
     def _load_dataset(self, filepath):
         """Loads flat sequence dictionary from .npz or .pkl"""        
@@ -54,6 +57,108 @@ class H36MEvaluator:
             subsets[score].append((clip_id, tensor))
             
         return subsets
+    
+    def detect_heel_stikes(self, seq):
+        """Detects heel strikes in motion sequence.
+        
+        Uses base theory of Zeni et al. 2008 (M1).
+        Use velocity thresholding by Bonci et al. 2022 (M7) for frame 0 strike detection.
+        Returns: list of tuples (frame_idx, joint_idx) of detected strikes.
+        """
+        T = seq.shape[0]
+
+        # Calculate overall walking speed to set an adaptive velocity threshold (M7)
+        total_pelvis_disp = np.linalg.norm(seq[-1, self.PELVIS, :] - seq[0, self.PELVIS, :])
+        avg_walking_speed = total_pelvis_disp / (T / self.fps) if T > 0 else 0
+        # Threshold: 0.5 * walking speed, with a hard floor of 0.1 m/s for freezing patients
+        v_thresh = max(0.5 * avg_walking_speed, 0.1)
+
+        # Calculate 3D velocities of both ankles
+        l_ankle_v = np.linalg.norm(np.diff(seq[:, self.L_ANKLE, :], axis=0), axis=-1) * self.fps
+        r_ankle_v = np.linalg.norm(np.diff(seq[:, self.R_ANKLE, :], axis=0), axis=-1) * self.fps
+        # Pad by repeating the last value to maintain length T
+        l_ankle_v = np.append(l_ankle_v, l_ankle_v[-1])
+        r_ankle_v = np.append(r_ankle_v, r_ankle_v[-1])
+
+        # Zeni Method (M1): Maximize Anterior-Posterior (Z-axis) distance from pelvis
+        l_ap_dist = seq[:, self.L_ANKLE, 2] - seq[:, self.PELVIS, 2]
+        r_ap_dist = seq[:, self.R_ANKLE, 2] - seq[:, self.PELVIS, 2]
+
+        # Use a very low prominence to catch tiny shuffling steps
+        l_candidates, _ = find_peaks(l_ap_dist, prominence=0.01)
+        r_candidates, _ = find_peaks(r_ap_dist, prominence=0.01)
+
+        l_strikes = list(l_candidates)
+        r_strikes = list(r_candidates)
+
+        # Corrected Frame 0 initially planted foot check
+        # Only register the most forward foot if both happen to be planted
+        l_planted = l_ankle_v[0] < v_thresh and seq[0, self.L_ANKLE, 1] < 0.05
+        r_planted = r_ankle_v[0] < v_thresh and seq[0, self.R_ANKLE, 1] < 0.05
+        
+        if l_planted and r_planted:
+            if l_ap_dist[0] > r_ap_dist[0]:
+                l_strikes.insert(0, 0)
+            else:
+                r_strikes.insert(0, 0)
+        elif l_planted:
+            l_strikes.insert(0, 0)
+        elif r_planted:
+            r_strikes.insert(0, 0)
+
+        # Combine and sort chronologically, preserving the joint identifier
+        raw_strikes = sorted([(f, self.L_ANKLE) for f in l_strikes] + 
+                             [(f, self.R_ANKLE) for f in r_strikes], key=lambda x: x[0])
+
+        if not raw_strikes:
+            return []
+
+        # Score candidate heel strikes on methods from Zeni et al. 2008 or Bonci et al. 2022
+        def score_candidate(frame, leg):
+            """
+            Scores a candidate heel strike. Higher is better.
+            Currently purely spatial (M1): favors the furthest forward foot.
+            Future: can subtract velocity or Y-coordinate to penalize mid-air/moving feet.
+            """
+            ap_dist = l_ap_dist[frame] if leg == self.L_ANKLE else r_ap_dist[frame]
+            return ap_dist
+
+        final_strikes = []
+        
+        for frame, leg in raw_strikes:
+            if not final_strikes:
+                final_strikes.append((frame, leg))
+                continue
+                
+            prev_frame, prev_leg = final_strikes[-1]
+            
+            if leg == prev_leg:
+                # Still same leg, keep updating strike if new candidate is better
+                if score_candidate(frame, leg) > score_candidate(prev_frame, prev_leg):
+                    final_strikes[-1] = (frame, leg)
+            else:
+                # Alternating to other leg, check if enough frames have passed since the last strike
+                enough_frames_between_steps = frame - prev_frame >= self.MIN_FRAMES_BETWEEN_STEPS
+                if enough_frames_between_steps:
+                    final_strikes.append((frame, leg))
+                else:
+                    # Not enough frames between strikes, assume noise -> evaluate which candidate is better
+                    new_strike_is_better = score_candidate(frame, leg) > score_candidate(prev_frame, prev_leg)
+                    if new_strike_is_better:
+                        # new candidate better, replace the last strike with the new strike
+                        final_strikes.pop()
+                        
+                        if not final_strikes:
+                            # just add strike if list is empty
+                            final_strikes.append((frame, leg))
+                        else:
+                            # if not, new strike and second-to-last strike are of same leg
+                            # compare these strikes and keep the better one 
+                            old_frame, old_leg = final_strikes[-1]
+                            if score_candidate(frame, leg) > score_candidate(old_frame, old_leg):
+                                final_strikes[-1] = (frame, leg)
+
+        return final_strikes
 
     def _extract_sequence_metrics(self, seq_tensor, clip_id="Unknown"):
         """
@@ -71,27 +176,23 @@ class H36MEvaluator:
         # ---------------------------------------------------------
         # PHYSICAL REALISM
         # ---------------------------------------------------------
-        # Bone Length Variance
         bone_variances = []
         for (j1, j2) in self.major_bones:
             bone_lengths = np.linalg.norm(seq[:, j1, :] - seq[:, j2, :], axis=-1)
             bone_variances.append(np.var(bone_lengths))
         metrics["mean_bone_length_variance"] = np.mean(bone_variances)
 
-        # Mean Jerk (3rd derivative of position with respect to time)
         velocity = np.diff(seq, axis=0) * self.fps
         acceleration = np.diff(velocity, axis=0) * self.fps
         jerk = np.diff(acceleration, axis=0) * self.fps
         metrics["mean_jerk"] = np.mean(np.linalg.norm(jerk, axis=-1))
 
-        # Heel Strike Detection (to calculate other metrics)
-        ankle_dist = np.linalg.norm(seq[:, self.L_ANKLE, :] - seq[:, self.R_ANKLE, :], axis=-1)
-
-        peaks, _ = find_peaks(ankle_dist, distance=8, prominence=0.005)
+        # Heel Strike Detection
+        peaks_info = self.detect_heel_stikes(seq)
         
         # Return NaNs if no proper walking pattern in motion sequence
-        if len(peaks) < 2:
-            print(f"  Warning: Sequence '{clip_id}' too short or no heel strikes detected (T={T}, peaks={len(peaks)}). Returning NaN metrics.")
+        if len(peaks_info) < 2:
+            print(f"  Warning: Sequence '{clip_id}' too short or no heel strikes detected (T={T}, peaks={len(peaks_info)}). Returning NaN metrics.")
             nan_metrics = ["floating", "foot_skating", "mean_step_length", "variance_step_length", 
                            "mean_walking_speed", "mean_vertical_foot_lifting", "mean_emos", "variance_emos"]
             for m in nan_metrics: metrics[m] = np.nan
@@ -104,13 +205,9 @@ class H36MEvaluator:
         hs_info = []
         horiz_vel = np.linalg.norm(np.diff(seq[:, :, [0, 2]], axis=0), axis=-1) * self.fps
         
-        for p in peaks:
-            # Identify planted foot (lowest Y coordinate)
-            stance_idx = self.L_ANKLE if seq[p, self.L_ANKLE, 1] < seq[p, self.R_ANKLE, 1] else self.R_ANKLE
-            # Floating: Y position of the planted foot
+        for p, stance_idx in peaks_info:
             floats.append(seq[p, stance_idx, 1])
             
-            # Record exact frame, joint index, and 3D coordinate of the planted foot
             hs_info.append({
                 "frame": int(p), 
                 "joint_idx": int(stance_idx), 
@@ -131,31 +228,28 @@ class H36MEvaluator:
         step_lengths = []
         foot_lifts = []
         
-        for i in range(1, len(peaks)):
-            start, end = peaks[i-1], peaks[i]
+        for i in range(1, len(peaks_info)):
+            start, _ = peaks_info[i-1]
+            end, stance_idx = peaks_info[i]
             
             # Step Length: Horizontal distance between ankles at strike
             sl = np.linalg.norm(seq[end, self.L_ANKLE, [0,2]] - seq[end, self.R_ANKLE, [0,2]])
             step_lengths.append(sl)
             
-            # Foot lifting: swinging foot max Y minus stance foot mean Y
-            # The swinging foot is the one that traveled further in Z during this step
-            l_travel = abs(seq[end, self.L_ANKLE, 2] - seq[start, self.L_ANKLE, 2])
-            r_travel = abs(seq[end, self.R_ANKLE, 2] - seq[start, self.R_ANKLE, 2])
-            
-            swing_idx = self.L_ANKLE if l_travel > r_travel else self.R_ANKLE
-            stance_idx = self.R_ANKLE if swing_idx == self.L_ANKLE else self.L_ANKLE
+            # The swinging foot is the one that is not planted at the end of the step
+            swing_idx = self.L_ANKLE if stance_idx == self.R_ANKLE else self.R_ANKLE
             
             max_swing_y = np.max(seq[start:end, swing_idx, 1])
             mean_stance_y = np.mean(seq[start:end, stance_idx, 1])
             foot_lifts.append(max_swing_y - mean_stance_y)
 
-        metrics["mean_step_length"] = np.mean(step_lengths)
-        metrics["variance_step_length"] = np.var(step_lengths)
-        metrics["mean_vertical_foot_lifting"] = np.mean(foot_lifts)
+        metrics["mean_step_length"] = np.mean(step_lengths) if step_lengths else np.nan
+        metrics["variance_step_length"] = np.var(step_lengths) if step_lengths else np.nan
+        metrics["mean_vertical_foot_lifting"] = np.mean(foot_lifts) if foot_lifts else np.nan
 
         # Walking Speed (m/s)
-        first_strike, last_strike = peaks[0], peaks[-1]
+        first_strike, _ = peaks_info[0]
+        last_strike, _ = peaks_info[-1]
         pelvis_displacement = np.linalg.norm(seq[last_strike, self.PELVIS, :] - seq[first_strike, self.PELVIS, :])
         time_elapsed = (last_strike - first_strike) / self.fps
         metrics["mean_walking_speed"] = pelvis_displacement / time_elapsed if time_elapsed > 0 else 0.0
@@ -171,15 +265,11 @@ class H36MEvaluator:
         emos_at_strikes = []
 
         # Extract eMoS specifically at Heel Strikes relative to the LEADING foot
-        if len(peaks) > 1:
-            for i in range(1, len(peaks)):
-                start, end = peaks[i-1], peaks[i]
+        if len(peaks_info) > 1:
+            for i in range(1, len(peaks_info)):
+                start, _ = peaks_info[i-1]
+                end, leading_idx = peaks_info[i]
                 
-                # The foot that traveled further during the step is the leading foot
-                l_travel = abs(seq[end, self.L_ANKLE, 2] - seq[start, self.L_ANKLE, 2])
-                r_travel = abs(seq[end, self.R_ANKLE, 2] - seq[start, self.R_ANKLE, 2])
-                
-                leading_idx = self.L_ANKLE if l_travel > r_travel else self.R_ANKLE
                 trailing_idx = self.R_ANKLE if leading_idx == self.L_ANKLE else self.L_ANKLE
                 
                 stance_x = seq[end, leading_idx, 0]
@@ -192,8 +282,8 @@ class H36MEvaluator:
                 emos = (stance_x - xcom[end]) * direction
                 emos_at_strikes.append(emos)
 
-            metrics["mean_emos"] = np.mean(emos_at_strikes)
-            metrics["variance_emos"] = np.var(emos_at_strikes)
+            metrics["mean_emos"] = np.mean(emos_at_strikes) if emos_at_strikes else np.nan
+            metrics["variance_emos"] = np.var(emos_at_strikes) if emos_at_strikes else np.nan
 
         return metrics
 
