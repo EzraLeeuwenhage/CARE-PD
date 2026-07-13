@@ -191,34 +191,32 @@ class H36MEvaluator:
         peaks_info = self.detect_heel_stikes(seq)
         
         # Return NaNs if no proper walking pattern in motion sequence
+        nan_metrics = [
+            "floating", "mean_stance_displacement",  
+            "mean_step_length", "mean_step_asymmetry",
+            "mean_walking_speed", "max_ankle_clearance",
+            "mean_emos", "variance_emos"
+        ]
+        
         if len(peaks_info) < 2:
             print(f"  Warning: Sequence '{clip_id}' too short or no heel strikes detected (T={T}, peaks={len(peaks_info)}). Returning NaN metrics.")
-            nan_metrics = ["floating", "foot_skating", "mean_step_length", "variance_step_length", 
-                           "mean_walking_speed", "mean_vertical_foot_lifting", "mean_emos", "variance_emos"]
             for m in nan_metrics: metrics[m] = np.nan
             metrics["heel_strikes_info"] = []
             return metrics
 
-        # Floating & Foot Skating (Evaluated at the exact moment of heel strikes)
+        # Floating
         floats = []
-        skates = []
         hs_info = []
-        horiz_vel = np.linalg.norm(np.diff(seq[:, :, [0, 2]], axis=0), axis=-1) * self.fps
         
         for p, stance_idx in peaks_info:
             floats.append(seq[p, stance_idx, 1])
-            
             hs_info.append({
                 "frame": int(p), 
                 "joint_idx": int(stance_idx), 
                 "coord": seq[p, stance_idx, :].tolist()
             })
-            
-            if p > 0:
-                skates.append(horiz_vel[p-1, stance_idx])
                 
         metrics["floating"] = np.mean(floats)
-        metrics["foot_skating"] = np.mean(skates) if skates else np.nan
         metrics["heel_strikes_info"] = hs_info
 
         # ---------------------------------------------------------
@@ -226,26 +224,40 @@ class H36MEvaluator:
         # ---------------------------------------------------------
         # Step Length & Vertical Foot Lifting
         step_lengths = []
-        foot_lifts = []
+        ankle_clearances = []
+        stance_displacements = []
         
         for i in range(1, len(peaks_info)):
-            start, _ = peaks_info[i-1]
-            end, stance_idx = peaks_info[i]
+            start, prev_stance_idx = peaks_info[i-1]
+            end, curr_stance_idx = peaks_info[i]
+                
+            # Stance foot (/ankle) displacement
+            anchor_pos = seq[start, prev_stance_idx, :]
+            end_pos = seq[end, prev_stance_idx, :]
             
-            # Step Length: Horizontal distance between ankles at strike
-            sl = np.linalg.norm(seq[end, self.L_ANKLE, [0,2]] - seq[end, self.R_ANKLE, [0,2]])
-            step_lengths.append(sl)
+            # Calculate 3D Euclidean distance between the stance foot's position at the start and end of the step
+            displacement = np.linalg.norm(end_pos - anchor_pos)
+            stance_displacements.append(displacement)
             
-            # The swinging foot is the one that is not planted at the end of the step
-            swing_idx = self.L_ANKLE if stance_idx == self.R_ANKLE else self.R_ANKLE
+            # Step Length, horizontal distance between joints at moment of strike
+            step_length = np.linalg.norm(seq[end, self.L_ANKLE, [0,2]] - seq[end, self.R_ANKLE, [0,2]])
+            step_lengths.append(step_length)
             
-            max_swing_y = np.max(seq[start:end, swing_idx, 1])
-            mean_stance_y = np.mean(seq[start:end, stance_idx, 1])
-            foot_lifts.append(max_swing_y - mean_stance_y)
+            # Absolute Ankle Clearance, swinging foot strikes ground at the end of interval
+            clearance = np.max(seq[start:end, curr_stance_idx, 1])
+            ankle_clearances.append(clearance)
 
+        metrics["mean_stance_displacement"] = np.mean(stance_displacements) if stance_displacements else np.nan
         metrics["mean_step_length"] = np.mean(step_lengths) if step_lengths else np.nan
-        metrics["variance_step_length"] = np.var(step_lengths) if step_lengths else np.nan
-        metrics["mean_vertical_foot_lifting"] = np.mean(foot_lifts) if foot_lifts else np.nan
+        
+        # Step Asymmetry (absolute difference between alternating consecutive steps, so arythmicity)
+        if len(step_lengths) > 1:
+            asymmetries = np.abs(np.diff(step_lengths))
+            metrics["mean_step_asymmetry"] = np.mean(asymmetries)
+        else:
+            metrics["mean_step_asymmetry"] = np.nan
+            
+        metrics["max_ankle_clearance"] = np.max(ankle_clearances) if ankle_clearances else np.nan
 
         # Walking Speed (m/s)
         first_strike, _ = peaks_info[0]
@@ -269,7 +281,6 @@ class H36MEvaluator:
             for i in range(1, len(peaks_info)):
                 start, _ = peaks_info[i-1]
                 end, leading_idx = peaks_info[i]
-                
                 trailing_idx = self.R_ANKLE if leading_idx == self.L_ANKLE else self.L_ANKLE
                 
                 stance_x = seq[end, leading_idx, 0]
@@ -297,11 +308,12 @@ class H36MEvaluator:
         grouped_sequences = self._get_severity_class_subsets(data, key_to_severity)
 
         metric_keys = [
-            "sequence_length", "mean_bone_length_variance", "floating", "foot_skating",
-            "mean_step_length", "variance_step_length", "mean_walking_speed", 
-            "mean_vertical_foot_lifting", "mean_emos", "variance_emos", "mean_jerk"
+            "sequence_length", "mean_bone_length_variance", "floating", 
+            "mean_stance_displacement", "mean_step_length", "mean_step_asymmetry", 
+            "mean_walking_speed", "max_ankle_clearance", 
+            "mean_emos", "variance_emos", "mean_jerk"
         ]
-        
+
         distributions = {"overall": {k: [] for k in metric_keys}}
         for severity in grouped_sequences.keys():
             distributions[severity] = {k: [] for k in metric_keys}

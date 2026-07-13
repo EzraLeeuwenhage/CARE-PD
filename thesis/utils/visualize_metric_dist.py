@@ -51,17 +51,17 @@ def plot_physical_realism_grouped(df, output_dir):
     plt.savefig(output_dir / "01a_phys_jerk.png", dpi=300)
     plt.close()
 
-    # Floating & Skating
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    # Floating & Stance Anchoring
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     
     sns.boxplot(data=df, x="Class_Label", y="floating", ax=axes[0], color="mediumaquamarine", width=0.5)
     axes[0].set_title("Floating (Lowest Foot Y-Coord at Strike)", fontsize=12, fontweight='bold')
     axes[0].set_ylabel("Vertical Position (meters)")
     axes[0].set_xlabel("")
 
-    sns.boxplot(data=df, x="Class_Label", y="foot_skating", ax=axes[1], color="turquoise", width=0.5)
-    axes[1].set_title("Foot Skating (Stance Foot Velocity at Strike)", fontsize=12, fontweight='bold')
-    axes[1].set_ylabel("Velocity (m/s)")
+    sns.boxplot(data=df, x="Class_Label", y="mean_stance_displacement", ax=axes[1], color="turquoise", width=0.5)
+    axes[1].set_title("Stance Anchoring (Mean Displacement)", fontsize=12, fontweight='bold')
+    axes[1].set_ylabel("Displacement (m)")
     axes[1].set_xlabel("")
 
     plt.tight_layout()
@@ -84,19 +84,19 @@ def plot_physical_realism_grouped(df, output_dir):
 def plot_pd_feature_bars(df, output_dir):
     """
     Plots summary stats (bars with error whiskers) for specified clinical features.
-    Safely ignores NaNs using np.nanmean and np.nanstd.
+    Safely ignores NaNs by dropping them before mean/std calculation.
     """
     features = [
         {"key": "mean_step_length", "title": "Mean Step Length", "ylabel": "Length (m)"},
-        {"key": "variance_step_length", "title": "Variance in Step Length", "ylabel": "Variance (m²)"},
+        {"key": "mean_step_asymmetry", "title": "Mean Step Asymmetry", "ylabel": "Difference (m)"},
         {"key": "mean_walking_speed", "title": "Walking Speed", "ylabel": "Speed (m/s)"},
-        {"key": "mean_vertical_foot_lifting", "title": "Vertical Foot Lifting", "ylabel": "Height (m)"},
+        {"key": "max_ankle_clearance", "title": "Max Ankle Clearance", "ylabel": "Clearance (m)"},
         {"key": "mean_emos", "title": "Estimated Margin of Stability (eMoS)", "ylabel": "eMoS (m)"},
         {"key": "variance_emos", "title": "Variance in eMoS", "ylabel": "Variance (m²)"}
     ]
 
     grid_shape = (2, 3)
-    fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=(6 * grid_shape[1], 5 * grid_shape[0]))
+    fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=(5.5 * grid_shape[1], 5 * grid_shape[0]))
     axes_flat = axes.flatten()
 
     labels = df["Class_Label"].unique() 
