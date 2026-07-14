@@ -35,15 +35,18 @@ def prepare_dataframe(data):
     return pd.DataFrame(records)
 
 # ---------------------------------------------------------
-# PHYSICAL REALISM BOX PLOTS
+# PHYSICAL REALISM
 # ---------------------------------------------------------
 def plot_physical_realism_grouped(df, output_dir):
-    """Creates grouped boxplots comparing Overall and Per-Class distributions."""
+    """Creates grouped violin plots comparing Overall and Per-Class distributions."""
     sns.set_theme(style="whitegrid")
+    
+    # Get correct ordering for x-axis
+    order = df["Class_Label"].unique()
 
     # Smoothness (Jerk)
     plt.figure(figsize=(10, 5))
-    sns.boxplot(data=df, x="Class_Label", y="mean_jerk", color="salmon", width=0.5)
+    sns.violinplot(data=df, x="Class_Label", y="mean_jerk", color="salmon", inner="quartile", order=order)
     plt.title("Jerk (Mean Rate of Acceleration Change)", fontsize=14, pad=10, fontweight='bold')
     plt.ylabel("Jerk (m/s³)")
     plt.xlabel("")
@@ -52,14 +55,14 @@ def plot_physical_realism_grouped(df, output_dir):
     plt.close()
 
     # Floating & Stance Anchoring
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(18, 5))
     
-    sns.boxplot(data=df, x="Class_Label", y="floating", ax=axes[0], color="mediumaquamarine", width=0.5)
+    sns.violinplot(data=df, x="Class_Label", y="floating", ax=axes[0], color="mediumaquamarine", inner="quartile", order=order)
     axes[0].set_title("Floating (Lowest Foot Y-Coord at Strike)", fontsize=12, fontweight='bold')
     axes[0].set_ylabel("Vertical Position (meters)")
     axes[0].set_xlabel("")
 
-    sns.boxplot(data=df, x="Class_Label", y="mean_stance_displacement", ax=axes[1], color="turquoise", width=0.5)
+    sns.violinplot(data=df, x="Class_Label", y="mean_stance_displacement", ax=axes[1], color="turquoise", inner="quartile", order=order)
     axes[1].set_title("Stance Anchoring (Mean Displacement)", fontsize=12, fontweight='bold')
     axes[1].set_ylabel("Displacement (m)")
     axes[1].set_xlabel("")
@@ -70,7 +73,7 @@ def plot_physical_realism_grouped(df, output_dir):
 
     # Structural Constancy
     plt.figure(figsize=(10, 5))
-    sns.boxplot(data=df, x="Class_Label", y="mean_bone_length_variance", color="plum", width=0.5)
+    sns.violinplot(data=df, x="Class_Label", y="mean_bone_length_variance", color="plum", inner="quartile", order=order)
     plt.title("Structural Constancy (Mean Bone Length Variance)", fontsize=14, pad=10, fontweight='bold')
     plt.ylabel("Variance (m²)")
     plt.xlabel("")
@@ -79,12 +82,12 @@ def plot_physical_realism_grouped(df, output_dir):
     plt.close()
 
 # ---------------------------------------------------------
-# PD FEATURES BAR CHARTS
+# PD FEATURES
 # ---------------------------------------------------------
-def plot_pd_feature_bars(df, output_dir):
+def plot_pd_feature_violins(df, output_dir):
     """
-    Plots summary stats (bars with error whiskers) for specified clinical features.
-    Safely ignores NaNs by dropping them before mean/std calculation.
+    Plots violin distributions for specified clinical features.
+    Seaborn handles NaNs natively during plotting.
     """
     features = [
         {"key": "mean_step_length", "title": "Mean Step Length", "ylabel": "Length (m)"},
@@ -92,7 +95,7 @@ def plot_pd_feature_bars(df, output_dir):
         {"key": "mean_walking_speed", "title": "Walking Speed", "ylabel": "Speed (m/s)"},
         {"key": "max_ankle_clearance", "title": "Max Ankle Clearance", "ylabel": "Clearance (m)"},
         {"key": "mean_emos", "title": "Estimated Margin of Stability (eMoS)", "ylabel": "eMoS (m)"},
-        {"key": "variance_emos", "title": "Variance in eMoS", "ylabel": "Variance (m²)"}
+        # {"key": "variance_emos", "title": "Variance in eMoS", "ylabel": "Variance (m²)"}
     ]
 
     grid_shape = (2, 3)
@@ -104,32 +107,37 @@ def plot_pd_feature_bars(df, output_dir):
     for idx, feat_info in enumerate(features):
         ax = axes_flat[idx]
         key = feat_info["key"]
-
-        means = []
-        stds = []
         
-        # calculate stats per class
-        for label in labels:
-            # Extract just this class and metric, dropping all NaNs immediately
-            subset = df[df["Class_Label"] == label][key].dropna()
-            
-            # If the entire subset was NaNs, avoid crashing script
-            if subset.empty:
-                means.append(np.nan)
-                stds.append(np.nan)
-            else:
-                means.append(np.mean(subset))
-                stds.append(np.std(subset))
+        if key in ["mean_emos"]:
+            # Use box plot for eMoS features
+            sns.boxplot(
+                data=df, 
+                x="Class_Label", 
+                y=key, 
+                ax=ax, 
+                order=labels,
+                hue="Class_Label", 
+                palette="muted", 
+                legend=False,
+                width=0.5
+            )
+        else:
+            # Use violin plot for other features
+            sns.violinplot(
+                data=df, 
+                x="Class_Label", 
+                y=key, 
+                ax=ax, 
+                order=labels,
+                hue="Class_Label", 
+                palette="muted", 
+                legend=False, 
+                inner="quartile"
+            )
 
-        x_pos = np.arange(len(labels))
-        colors = sns.color_palette("muted", n_colors=len(labels))
-        
-        ax.bar(x_pos, means, yerr=stds, capsize=6, color=colors, alpha=0.8, edgecolor='black')
-
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels(labels)
         ax.set_title(feat_info["title"], fontsize=12, fontweight='bold', pad=10)
         ax.set_ylabel(feat_info["ylabel"])
+        ax.set_xlabel("Severity Class")
         ax.grid(axis='y', linestyle='--', alpha=0.5)
 
     plt.suptitle("Clinical PD Features by Severity Class", fontsize=16, fontweight='bold', y=1.02)
@@ -222,6 +230,6 @@ if __name__ == "__main__":
 
         plot_sequence_length_distribution(df, output_dir)
         plot_physical_realism_grouped(df, output_dir)
-        plot_pd_feature_bars(df, output_dir)
+        plot_pd_feature_violins(df, output_dir)
 
         print(f"\nSuccessfully generated all visuals in: {output_dir}")
