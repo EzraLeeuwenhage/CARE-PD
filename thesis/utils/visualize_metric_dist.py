@@ -44,16 +44,6 @@ def plot_physical_realism_grouped(df, output_dir):
     # Get correct ordering for x-axis
     order = df["Class_Label"].unique()
 
-    # Smoothness (Jerk)
-    plt.figure(figsize=(10, 5))
-    sns.violinplot(data=df, x="Class_Label", y="mean_jerk", color="salmon", inner="quartile", order=order)
-    plt.title("Jerk (Mean Rate of Acceleration Change)", fontsize=14, pad=10, fontweight='bold')
-    plt.ylabel("Jerk (m/s³)")
-    plt.xlabel("")
-    plt.tight_layout()
-    plt.savefig(output_dir / "01a_phys_jerk.png", dpi=300)
-    plt.close()
-
     # Floating & Stance Anchoring
     fig, axes = plt.subplots(1, 2, figsize=(18, 5))
     
@@ -95,7 +85,7 @@ def plot_pd_feature_violins(df, output_dir):
         {"key": "mean_walking_speed", "title": "Walking Speed", "ylabel": "Speed (m/s)"},
         {"key": "max_ankle_clearance", "title": "Max Ankle Clearance", "ylabel": "Clearance (m)"},
         {"key": "mean_emos", "title": "Estimated Margin of Stability (eMoS)", "ylabel": "eMoS (m)"},
-        # {"key": "variance_emos", "title": "Variance in eMoS", "ylabel": "Variance (m²)"}
+        {"key": "mean_jerk", "title": "Mean Joint Jerk (Smoothness)", "ylabel": "Jerk (m/s³)"}
     ]
 
     grid_shape = (2, 3)

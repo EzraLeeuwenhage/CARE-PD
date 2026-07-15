@@ -182,11 +182,6 @@ class H36MEvaluator:
             bone_variances.append(np.var(bone_lengths))
         metrics["mean_bone_length_variance"] = np.mean(bone_variances)
 
-        velocity = np.diff(seq, axis=0) * self.fps
-        acceleration = np.diff(velocity, axis=0) * self.fps
-        jerk = np.diff(acceleration, axis=0) * self.fps
-        metrics["mean_jerk"] = np.mean(np.linalg.norm(jerk, axis=-1))
-
         # Heel Strike Detection
         peaks_info = self.detect_heel_stikes(seq)
         
@@ -195,7 +190,7 @@ class H36MEvaluator:
             "floating", "mean_stance_displacement",  
             "mean_step_length", "mean_step_asymmetry",
             "mean_walking_speed", "max_ankle_clearance",
-            "mean_emos", "variance_emos"
+            "mean_emos", "variance_emos", "mean_jerk"
         ]
         
         if len(peaks_info) < 2:
@@ -222,6 +217,12 @@ class H36MEvaluator:
         # ---------------------------------------------------------
         # PD FEATURES
         # ---------------------------------------------------------
+        # Jerk (smoothness of joint motion)
+        velocity = np.diff(seq, axis=0) * self.fps
+        acceleration = np.diff(velocity, axis=0) * self.fps
+        jerk = np.diff(acceleration, axis=0) * self.fps
+        metrics["mean_jerk"] = np.mean(np.linalg.norm(jerk, axis=-1))
+
         # Step Length & Vertical Foot Lifting
         step_lengths = []
         ankle_clearances = []
