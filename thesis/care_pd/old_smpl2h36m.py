@@ -1,4 +1,4 @@
-""" TODO: cite care pd repo for original code, changes marked with 'Adapted' """
+""" TODO: delete this file at some point """
 
 # patch deprecated 'chumpy' package for compatibility with python 3.11+
 import inspect
@@ -31,16 +31,12 @@ import pandas as pd
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-# TODO: remove dependencies of CARE-PD repo, so thesis code is run independently
 from const.const import _DEVICE, SUPPORTED_DATASETS, DATASET_ORIGINAL_FPS
 from const import path
 from scipy.spatial.transform import Rotation as R
 from scipy.signal import savgol_filter
 
-""" 
-Slope correction logic from CARE-PD repo
-TODO: Add proper citation for CARE-PD repo and authorship of slope correction code.
- """
+
 def detect_standing_still(seq):
     sacrum_locs = seq[:, 0, :]
     sdiff = np.diff(sacrum_locs, axis=0)
