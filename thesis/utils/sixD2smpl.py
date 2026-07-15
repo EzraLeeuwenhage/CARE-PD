@@ -10,11 +10,12 @@ def convert_6d_to_smpl(pose_6d_tensor):
     if isinstance(pose_6d_tensor, np.ndarray):
         pose_6d_tensor = torch.tensor(pose_6d_tensor, dtype=torch.float32)
 
-    # Drop the empty 25th joint if it exists (because it contains no information)
-    if pose_6d_tensor.shape[1] == 25:
-        pose_6d_tensor = pose_6d_tensor[:, :24, :]
+    # Use shape[-2] instead of shape[1] so it works regardless of batch dimension
+    # Drop the empty 25th joint if it exists
+    if pose_6d_tensor.shape[-2] == 25:
+        pose_6d_tensor = pose_6d_tensor[..., :24, :]
         
-    T, V, _ = pose_6d_tensor.shape
+    original_shape = pose_6d_tensor.shape
     
     # Gram-Schmidt Orthogonalization
     v1 = pose_6d_tensor[..., :3]
@@ -32,7 +33,8 @@ def convert_6d_to_smpl(pose_6d_tensor):
     rotations = R.from_matrix(rot_mats_flat)
     axis_angles_flat = rotations.as_rotvec()
     
-    smpl_pose = axis_angles_flat.reshape(T, V, 3)
+    # Dynamically reshape based on input dimensions (e.g., T, 24, 3 or B, T, 24, 3)
+    smpl_pose = axis_angles_flat.reshape(*original_shape[:-1], 3)
     return smpl_pose
 
 
@@ -54,7 +56,7 @@ def build_smpl_pkl_from_6d_smpl(generated_pose_6d, generated_trans, output_filep
         seq_trans = generated_trans[i] # (T, 3)
         
         # Convert 6D to axis-angle and flatten
-        seq_smpl_3d = convert_6d_to_smpl(seq_6d) # (T, 24, 3)t
+        seq_smpl_3d = convert_6d_to_smpl(seq_6d) # (T, 24, 3)
         seq_pose_flat = seq_smpl_3d.reshape(-1, 72).astype(np.float32)
         
         # Create neutral beta shape parameters, just like CARE-PD dataset
@@ -89,7 +91,9 @@ def validate_reconstruction(num_samples=100):
         pkl_data = pickle.load(f)
     npz_data = np.load(npz_path, allow_pickle=True)
     
-    all_keys = npz_data.files
+    # FILTER OUT THE TRANSLATION KEYS so the validator only tests poses
+    all_keys = [k for k in npz_data.files if not k.endswith('_trans')]
+    
     # Ensure we don't sample more keys than actually exist
     num_samples = min(num_samples, len(all_keys))
     sample_keys = random.sample(all_keys, num_samples)

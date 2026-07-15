@@ -140,7 +140,7 @@ if __name__ == "__main__":
     import os
     
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-    from thesis.utils.data_conversion_utils import build_smpl_pkl_from_6d_smpl
+    from thesis.utils.sixD2smpl import build_smpl_pkl_from_6d_smpl
     
     config_path = CONFIG_PATH
     with open(config_path, 'r') as f:

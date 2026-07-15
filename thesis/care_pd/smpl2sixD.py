@@ -9,7 +9,6 @@ from smplx.body_models import SMPL
 from types import SimpleNamespace
 import argparse
 import sys
-import torch
 from scipy.spatial.transform import Rotation as R
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -24,14 +23,10 @@ from thesis.care_pd.conversion_utils import (
     quat_to_scipy
 )
 
-def canonicalize_smpl_sequence(pose_world, trans_world, h36m_joints_world, cfg):
+def canonicalize_smpl_sequence(pose_world, h36m_joints_world, smpl_model, h36m_regressor):
     """
     Canonicalizes the SMPL sequence to a standard orientation and position in the world frame.
-    Purpose is to apply slope and veering corrections to (6D) SMPL representations, but
-    ensure that the resulting H36M after conversions is identical to applying the corrections to H36M data directly. 
-
-    Therefore, it runs the exact carepd SMPL2H36M preprocessing logic to calculate needed transformations,
-    then applies those transformation to the (6D) SMPL root joint orientation and global translations.
+    Uses Target-Driven Translation to guarantee perfect alignment with standard H36M coordinates.
     """
     T = pose_world.shape[0]
     
@@ -77,13 +72,12 @@ def canonicalize_smpl_sequence(pose_world, trans_world, h36m_joints_world, cfg):
         # Identity quaternion (w, x, y, z) if no veering
         correction_quat = np.array([[1.0, 0.0, 0.0, 0.0]])
 
-    # Apply H36M corrections to ROOT JOINT orientation and global translation
+    # Apply H36M corrections to ROOT JOINT orientation
     R_face_z_direction = quat_to_scipy(root_quat_init)
     R_veering = quat_to_scipy(correction_quat)
     R_global_static = R_veering * R_face_z_direction 
 
     pose_aligned = pose_world.copy()
-    trans_aligned = np.zeros_like(trans_world)
 
     for i in range(T):
         # Compute total rotation matrix for frame `i` slope correction
@@ -94,21 +88,30 @@ def canonicalize_smpl_sequence(pose_world, trans_world, h36m_joints_world, cfg):
         new_root_rot = R_i * root_rot
         pose_aligned[i, 0, :] = new_root_rot.as_rotvec()
 
-        # Apply rotation and translation offset to world_trans
-        # Compute original offset and rotate it in direction aligned with z-axis
-        P_orig = h36m_joints_world[i, 0, :]
-        P_final = h36m_curr[i, 0, :]
-        offset = trans_world[i] - P_orig
-        trans_aligned[i] = P_final + R_i.apply(offset)
+    # Compute exact location of h36m pelvis by regressing SMPL model to h36m data
+    global_orient = torch.tensor(pose_aligned[:, 0:1, :], dtype=torch.float32).reshape(T, -1).to(_DEVICE)
+    body_pose = torch.tensor(pose_aligned[:, 1:24, :], dtype=torch.float32).reshape(T, -1).to(_DEVICE)
+    
+    betas = torch.zeros((T, 10), dtype=torch.float32).to(_DEVICE)
+    zero_pose = torch.zeros((T, 3), dtype=torch.float32).to(_DEVICE)
+    zero_hand = torch.zeros((T, 15, 3), dtype=torch.float32).to(_DEVICE)
+    zero_exp = torch.zeros((T, 10), dtype=torch.float32).to(_DEVICE)
+    
+    # Run SMPL with zero global translation
+    out_aligned = smpl_model(betas=betas, body_pose=body_pose, global_orient=global_orient,
+                             jaw_pose=zero_pose, leye_pose=zero_pose, reye_pose=zero_pose,
+                             left_hand_pose=zero_hand, right_hand_pose=zero_hand, expression=zero_exp)
+                             
+    local_h36m = vertices2joints(h36m_regressor, out_aligned.vertices).cpu().detach().numpy()
+    
+    # The required global translation is exactly the difference between the target pelvis and the local pelvis
+    trans_aligned = h36m_curr[:, 0, :] - local_h36m[:, 0, :]
 
     return pose_aligned, trans_aligned
 
+
 def compute_6D_motionclip_representation_from_pkl_SMPL_params(cfg):
-    if cfg.slope_correction:
-        ext = '_slopeCorrected'
-    else:
-        ext = ''
-    cfg.OUT_PATH_f = cfg.OUT_PATH / f'PD-GaM_6D_SMPL_rot_trans_no_slope_no_veering{ext}.npz'
+    cfg.OUT_PATH_f = cfg.OUT_PATH / f'PD-GaM_6D_SMPL_rot_trans_no_slope_no_veering.npz'
     
     h36m_regressor = torch.tensor(np.load(cfg.H36M_J_REG), dtype=torch.float32).to(_DEVICE)
     smpl_model = SMPL(model_path=cfg.MODEL_PATH, num_betas=10).to(_DEVICE)
@@ -122,9 +125,7 @@ def compute_6D_motionclip_representation_from_pkl_SMPL_params(cfg):
             smpl_data = all_smpls[subject_id][walk_id]
             
             if smpl_data['pose'].shape[0] < 30:
-                    # print(f"Skipping {walk_name} with {smpl_data['pose'].shape[0]} frames")
-                    continue
-            
+                continue
             if 'Trimmed' in walk_id:
                 continue
 
@@ -136,14 +137,14 @@ def compute_6D_motionclip_representation_from_pkl_SMPL_params(cfg):
                 else:
                     walk_name = str(subject_id) + '__' + str(walk_id) + f'_down{down}' 
 
-                out_world, pose_world, world_trans = generate_smpl_in_world(
+                out_world, pose_world, _ = generate_smpl_in_world(
                     smpl_model, smpl_data, down_sample_rate, down
                 ) # (num_frames, 24, 3) axis-angle per frame
-                vertices_world = out_world.vertices #.cpu().detach().numpy()  # (n_frames, n_vertices, 3)
+                vertices_world = out_world.vertices # (n_frames, n_vertices, 3)
                 
                 h36m_joints_world = vertices2joints(h36m_regressor, vertices_world).cpu().detach().numpy()
                 pose_world_aligned, trans_world_aligned = canonicalize_smpl_sequence(
-                    pose_world, world_trans, h36m_joints_world, cfg
+                    pose_world, h36m_joints_world, smpl_model, h36m_regressor
                 )
 
                 pose6d = get_6D_rep_from_24x3_pose(torch.tensor(pose_world_aligned)) # shape (T, 25, 6)
@@ -158,7 +159,6 @@ def compute_6D_motionclip_representation_from_pkl_SMPL_params(cfg):
     print(f"Saved {cfg.OUT_PATH_f} with {len(result)} sequences: {len(result)/2} rotations {len(result)/2} trans seqs")
      
             
- # SUPPORTED_DATASETS = ['BMCLab', 'T-SDU-PD', 'PD-GaM', '3DGait', 'DNE', 'E-LC', 'KUL-DT-T', 'T-LTC', 'T-SDU']    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert SMPL .pkl sequences to 6D .npz format.")
     parser.add_argument("-i", "--input", type=str, default="thesis/data/raw/PD-GaM/PD-GaM.pkl",
@@ -186,12 +186,9 @@ if __name__ == "__main__":
     print(f"Output Dir: {cfg.OUT_PATH}")
     
     # HARDCODED logic for PD-GaM
-    cfg.db = 'PD-GaM' 
-    cfg.slope_correction = False
+    cfg.db = 'PD-GaM'     
     cfg.exfps = 30
     cfg.fps = 30
     
     os.makedirs(cfg.OUT_PATH, exist_ok=True)
     compute_6D_motionclip_representation_from_pkl_SMPL_params(cfg)
-
-    
