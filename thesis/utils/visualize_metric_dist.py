@@ -5,6 +5,7 @@ import seaborn as sns
 import numpy as np
 import pandas as pd
 from pathlib import Path
+from thesis.src.evaluate_distributions import DistributionComparator
 
 def load_data(pkl_path):
     with open(pkl_path, 'rb') as f:
@@ -199,27 +200,151 @@ def plot_sequence_length_distribution(df, output_dir):
     plt.savefig(output_dir / "00b_sequence_length_per_class.png", dpi=300, bbox_inches='tight')
     plt.close()
 
+# ---------------------------------------------------------
+# COMBINED (SPLIT) VIOLIN PLOTS
+# ---------------------------------------------------------
+def prepare_combined_dataframe(gt_data, gen_data):
+    """
+    Merges ground-truth and generated data dicts into one dataframe.
+    Adds 'Source' column for Seaborn split-violins plotting.
+    """
+    records = []
+    keys = ["overall"] + sorted([k for k in gt_data.keys() if k != "overall"])
+
+    for cls_key in keys:
+        n_seq_gt = len(gt_data[cls_key]["sequence_length"])
+        n_seq_gen = len(gen_data[cls_key]["sequence_length"]) if cls_key in gen_data else 0
+        
+        cls_name = "Overall" if cls_key == "overall" else f"Class {cls_key}"
+        
+        # Compact label to prevent x-axis text overlapping
+        label = f"{cls_name}\n({n_seq_gt} / {n_seq_gen})"
+
+        # ground truth data
+        for i in range(n_seq_gt):
+            rec = {"Class_Label": label, "Class_ID": cls_key, "Source": "Ground Truth"}
+            for k, v in gt_data[cls_key].items():
+                rec[k] = v[i]
+            records.append(rec)
+            
+        # Generated data
+        if cls_key in gen_data:
+            for i in range(n_seq_gen):
+                rec = {"Class_Label": label, "Class_ID": cls_key, "Source": "Generated"}
+                for k, v in gen_data[cls_key].items():
+                    rec[k] = v[i]
+                records.append(rec)
+
+    return pd.DataFrame(records)
+
+def plot_pd_feature_split_violins(df, distances_df, output_dir):
+    """
+    Plots individual split-violin distributions for GT vs Gen data.
+    Adds text with the KS and Hellinger distances.
+    """
+    features = [
+        {"key": "mean_step_length", "title": "Mean Step Length", "ylabel": "Length (m)"},
+        {"key": "mean_step_asymmetry", "title": "Mean Step Asymmetry", "ylabel": "Difference (m)"},
+        {"key": "mean_walking_speed", "title": "Walking Speed", "ylabel": "Speed (m/s)"},
+        {"key": "max_ankle_clearance", "title": "Max Ankle Clearance", "ylabel": "Clearance (m)"},
+        {"key": "mean_emos", "title": "Estimated Margin of Stability (eMoS)", "ylabel": "eMoS (m)"},
+        {"key": "mean_jerk", "title": "Mean Joint Jerk (Smoothness)", "ylabel": "Jerk (m/s³)"}
+    ]
+
+    labels = df["Class_Label"].unique() 
+
+    def get_color(score):
+        if score < 0.10: return '#85e085' # Green
+        if score < 0.20: return '#ffe680' # Yellow
+        if score < 0.40: return '#ffb366' # Orange
+        return '#ff6666' # Red
+
+    for feat_info in features:
+        # Create a fresh, standalone figure for each feature
+        fig, ax = plt.subplots(figsize=(8, 6))
+        key = feat_info["key"]
+        
+        # Split Violin Plot
+        sns.violinplot(
+            data=df, x="Class_Label", y=key, hue="Source", split=True, 
+            ax=ax, order=labels, inner="quartile",
+            palette={"Ground Truth": "cornflowerblue", "Generated": "salmon"}
+        )
+
+        ax.set_title(f"{feat_info['title']} (GT vs. Generated)", fontsize=14, fontweight='bold', pad=30)
+        ax.set_ylabel(feat_info["ylabel"])
+        ax.set_xlabel("Severity Class\n(Sample sizes: GT / Generated)")
+        ax.grid(axis='y', linestyle='--', alpha=0.5)
+        
+        # Calculate text placement bounds
+        y_max = df[key].max()
+        y_range = y_max - df[key].min()
+        ax.set_ylim(df[key].min() - (y_range * 0.05), y_max + (y_range * 0.25))
+
+        # Plot the scoring text
+        x_ticks = [l.get_text() for l in ax.get_xticklabels()]
+        for x_idx, label_text in enumerate(x_ticks):
+            sev_name = label_text.split('\n')[0] # Extract "Overall" or "Class 0"
+            
+            match = distances_df[(distances_df['Severity'] == sev_name) & (distances_df['Metric'] == key)]
+            if not match.empty:
+                ks = match.iloc[0]['KS_Stat']
+                h = match.iloc[0]['Hellinger']
+                worst_score = max(ks, h)
+                
+                ax.text(x_idx, y_max + (y_range * 0.05), f"K: {ks:.2f}\nH: {h:.2f}",
+                        ha='center', va='bottom', fontsize=10, fontweight='bold',
+                        bbox=dict(facecolor=get_color(worst_score), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
+
+        ax.legend(
+            title="Data Source", 
+            bbox_to_anchor=(1.02, 1.0), 
+            loc='upper left', 
+            borderaxespad=0
+        )
+
+        plt.tight_layout()
+        
+        out_filename = output_dir / f"02b_{key}_split_violin.png"
+        plt.savefig(out_filename, dpi=300, bbox_inches='tight')
+        plt.close()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-i", "--input", type=str, default="thesis/data/processed/evaluation/gt_h36m_distributions.pkl")
-    parser.add_argument("-o", "--output", type=str, default="thesis/visualizations")
+    parser.add_argument("--gt", type=str, 
+                        default="thesis/data/processed/baseline_model/evaluation/gt_h36m_distributions_new_metrics.pkl")
+    parser.add_argument("--gen", type=str, 
+                        default="thesis/data/processed/baseline_model/evaluation/gen_h36m_distributions_new_metrics.pkl")
+    parser.add_argument("-o", "--output", type=str, default="thesis/visualizations/test")
     args = parser.parse_args()
 
-    pkl_path = Path(args.input)
+    gt_path = Path(args.gt)
+    gen_path = Path(args.gen)
     output_dir = Path(args.output)
     
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if not pkl_path.exists():
-        print(f"Could not find file at {pkl_path}")
-        print("Please run evaluate.py first to generate this file.")
+    if not gt_path.exists() or not gen_path.exists():
+        print("Could not find required .pkl files.")
     else:
         print("Loading cached distributions...")
-        data = load_data(pkl_path)
-        df = prepare_dataframe(data)
+        gt_data = load_data(gt_path)
 
-        plot_sequence_length_distribution(df, output_dir)
-        plot_physical_realism_grouped(df, output_dir)
-        plot_pd_feature_violins(df, output_dir)
+        # # GT visuals
+        # gt_df = prepare_dataframe(gt_data)
+        # plot_sequence_length_distribution(gt_df, output_dir)
+        # plot_physical_realism_grouped(gt_df, output_dir)
+        # plot_pd_feature_violins(gt_df, output_dir)
+
+        # Combined split violin plots for GT and generated data
+        gen_data = load_data(gen_path)
+
+        print("Computing distribution distances for split violin plot...")
+        comparator = DistributionComparator()
+        results = comparator.compare(gt_data, gen_data)
+        results_df = comparator._format_results_to_dataframe(results)
+        combined_df = prepare_combined_dataframe(gt_data, gen_data)
+        plot_pd_feature_split_violins(combined_df, results_df, output_dir)
 
         print(f"\nSuccessfully generated all visuals in: {output_dir}")

@@ -360,9 +360,9 @@ class H36MEvaluator:
 
 if __name__ == "__main__":
     evaluator = H36MEvaluator(fps=30)
-    data_path = Path("thesis/data/processed/baseline_model/h36m/ground_truth_3d_world.npz")
-    labels_path = Path("thesis/data/processed/baseline_model/h36m/gt_labels.json") 
-    output_path = Path("thesis/data/processed/evaluation/gt_h36m_distributions_new_metrics.pkl")
+    data_path = Path("thesis/data/processed/baseline_model/h36m/generated_3d_world.npz")
+    labels_path = Path("thesis/data/processed/baseline_model/h36m/gen_labels.json") 
+    output_path = Path("thesis/data/processed/baseline_model/evaluation/gen_h36m_distributions_new_metrics.pkl")
 
     print(f"--- Generating Ground Truth H36M Evaluation Metrics ---")
     print(f"Data path:   {data_path}")
