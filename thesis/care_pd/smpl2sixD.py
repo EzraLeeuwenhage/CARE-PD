@@ -28,7 +28,9 @@ from thesis.care_pd.conversion_utils import (
 def canonicalize_smpl_sequence(pose_world, h36m_joints_world, smpl_model, h36m_regressor):
     """
     Canonicalizes the SMPL sequence to a standard orientation and position in the world frame.
-    Uses Target-Driven Translation to guarantee perfect alignment with standard H36M coordinates.
+    
+    Bases translations on the desired h36m outcome to ensure the same result as original CARE-PD data
+    translations directly applied on the h36m data. 
     """
     T = pose_world.shape[0]
     

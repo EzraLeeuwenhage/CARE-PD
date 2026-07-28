@@ -12,7 +12,7 @@ from thesis.src.generate_prior import generate_prior_from_prefix
 from thesis.src.sample import euler_ode_solver
 from thesis.utils.sixD2smpl import build_smpl_pkl_from_6d_smpl
 from thesis.care_pd.smpl2h36m import convert_smpl_to_h36m
-from thesis.src.evaluate import H36MEvaluator
+from thesis.src.evaluate_h36m import H36MEvaluator
 from thesis.src.train import train
 
 CONFIG_PATH = "thesis/configs/baseline.yaml"

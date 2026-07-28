@@ -356,7 +356,7 @@ class H36MEvaluator:
         print(f"[Evaluator] Saved evaluation distributions to: {cache_output_path}")
         print(f"[Evaluator] Saved heel strike detection data to: {hs_out_path}")
         return distributions
-    
+
 
 if __name__ == "__main__":
     evaluator = H36MEvaluator(fps=30)
