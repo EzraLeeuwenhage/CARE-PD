@@ -28,11 +28,7 @@ def train(model, dataloader, cfg, device=None):
     
     epochs = cfg['training']['epochs']
     loss_weight = cfg['training']['loss_weight']
-    
-    if 'paths' in cfg and 'weights' in cfg['paths']:
-        save_path = Path(cfg['paths']['weights'])
-    else:
-        save_path = Path(cfg['training']['save_path'])
+    save_path = Path(cfg['paths']['weights'])
         
     save_path.parent.mkdir(parents=True, exist_ok=True)
     

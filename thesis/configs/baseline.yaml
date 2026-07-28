@@ -1,7 +1,6 @@
 data:
   num_joints: 24
-  6d_smpl_path: "thesis/data/raw/PD-GaM/6D_SMPL/6D_SMPL_30f_or_longer.npz"
-  smpl_translations_path: "thesis/data/raw/PD-GaM/6D_SMPL/6D_SMPL_30f_or_longer_translations.npz"
+  6d_smpl_path: "thesis/data/raw/PD-GaM/6D_SMPL/PD-GaM_6D_SMPL_rot_trans_no_slope_no_veering.npz"
   patient_prefix: "all"
   severity_labels_path: "thesis/data/metadata/pd_gam_labels.json"
 
@@ -12,7 +11,7 @@ windowing:
   min_z_travel: 0.5
 
 training:
-  epochs: 500
+  epochs: 5
   learning_rate: 0.001
   batch_size: 256
   num_workers: 2
@@ -24,5 +23,5 @@ sampling:
   num_steps: 100
 
 paths:
-  weights: "thesis/models/baseline_model.pth"
-  output_dir: "thesis/data/processed/baseline_model"
+  weights: "thesis/models/baseline_model_v2.pth"
+  output_dir: "thesis/data/processed/baseline_model_v2"

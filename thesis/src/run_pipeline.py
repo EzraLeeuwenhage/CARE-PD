@@ -16,6 +16,9 @@ from thesis.src.evaluate_h36m import H36MEvaluator
 from thesis.src.evaluate_smpl import SMPLEvaluator
 from thesis.src.train import train
 
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
 CONFIG_PATH = "thesis/configs/baseline.yaml"
 
 def load_config():
@@ -174,8 +177,8 @@ if __name__ == "__main__":
     dataset = SMPL6DDataset(config_path=CONFIG_PATH)
     model = FlowMatchingMLP(config_path=CONFIG_PATH).to(device)
 
-    # optional train time optimization
-    model = torch.compile(model)
+    # # optional train time optimization
+    # model = torch.compile(model)
     
     print("\n--- PHASE 1: TRAINING ---")
     loader = DataLoader(

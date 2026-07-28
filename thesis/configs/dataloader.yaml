@@ -1,6 +1,5 @@
 data:
-  6d_smpl_path: "thesis/data/raw/PD-GaM/6D_SMPL/6D_SMPL_30f_or_longer.npz"
-  smpl_translations_path: "thesis/data/raw/PD-GaM/6D_SMPL/6D_SMPL_30f_or_longer_translations.npz"
+  6d_smpl_path: "thesis/data/raw/PD-GaM/6D_SMPL/PD-GaM_6D_SMPL_rot_trans_no_slope_no_veering.npz"
   severity_labels_path: "thesis/data/metadata/pd_gam_labels.json"
   patient_prefix: "all"
   num_joints: 24

@@ -21,10 +21,20 @@ class SMPL6DDataset(Dataset):
         self.min_z_travel = self.cfg['windowing'].get('min_z_travel', 0.0)
 
         with np.load(self.cfg['data']['6d_smpl_path'], allow_pickle=True) as npz:
-            self.pose_data = {k: np.array(v) for k, v in npz.items()}
+            raw_data = {k: np.array(v) for k, v in npz.items()}
 
-        with np.load(self.cfg['data']['smpl_translations_path'], allow_pickle=True) as npz:
-            self.trans_data = {k: np.array(v) for k, v in npz.items()}
+        self.pose_data = {}
+        self.trans_data = {}
+
+        # Separate pose and translation data on suffix
+        for key, tensor in raw_data.items():
+            if not key.endswith('_trans'):
+                self.pose_data[key] = tensor
+                trans_key = f"{key}_trans"
+                if trans_key in raw_data:
+                    self.trans_data[key] = raw_data[trans_key]
+                else:
+                    raise KeyError(f"Missing paired translation data for pose sequence: '{key}'")
 
         # Check for specific patient prefix or load all data
         patient_prefix = self.cfg['data'].get('patient_prefix')
