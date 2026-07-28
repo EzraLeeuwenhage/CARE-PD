@@ -40,7 +40,11 @@ Adapted code, based on CARE-PD repo, for converting SMPL data to H36M format.
 def main_world_only(cfg):
     """Streamlined function to extract 3D world coordinates and skip all camera/image projections."""        
     base_name = cfg.DATA_DIR.stem
-    cfg.OUT_PATH_world = cfg.OUT_PATH / f'{base_name}_NEW_h36m_3d_world.npz'
+
+    if hasattr(cfg, 'output_filename') and cfg.output_filename is not None:
+        cfg.OUT_PATH_world = cfg.OUT_PATH / cfg.output_filename
+    else:
+        cfg.OUT_PATH_world = cfg.OUT_PATH / f'{base_name}_h36m_3d_world.npz'
     
     h36m_regressor = torch.tensor(np.load(cfg.H36M_J_REG), dtype=torch.float32).to(_DEVICE)
     smpl_model = SMPL(model_path=cfg.MODEL_PATH, num_betas=10).to(_DEVICE)
@@ -71,13 +75,15 @@ def main_world_only(cfg):
     np.savez(cfg.OUT_PATH_world, **result_world)
     return cfg.OUT_PATH_world
 
-def convert_smpl_to_h36m(input_filename, output_dir=None):
+def convert_smpl_to_h36m(input_filename, output_dir=None, output_filename=None):
     """Wrapper for SMPL to H36M conversion.
     
     Expects input_filename to be a full path (e.g., thesis/data/processed/PD-GaM/SMPL/file.pkl)
     """
     input_path = Path(input_filename)
     cfg = SimpleNamespace()
+
+    cfg.output_filename = output_filename
         
     cfg.H36M_J_REG = Path('./data/preprocessing/common/J_regressor_h36m_correct.npy')
     cfg.MODEL_PATH = Path('./data/preprocessing/common/body_models/smpl/SMPL_NEUTRAL.pkl')
@@ -114,7 +120,9 @@ if __name__ == "__main__":
                         help="Path to the input SMPL .pkl file.")
     parser.add_argument("-o", "--output", type=str, default=None,
                         help="Path to the output directory. Defaults to two levels up + /h36m.")
+    parser.add_argument("-f", "--filename", type=str, default=None, 
+                        help="Optional specific output filename (e.g., 'ground_truth_3d_world.npz').")
     
     args = parser.parse_args()
     
-    convert_smpl_to_h36m(input_filename=args.input, output_dir=args.output)
+    convert_smpl_to_h36m(input_filename=args.input, output_dir=args.output, output_filename=args.filename)

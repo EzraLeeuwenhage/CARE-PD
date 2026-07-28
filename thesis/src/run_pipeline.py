@@ -13,6 +13,7 @@ from thesis.src.sample import euler_ode_solver
 from thesis.utils.sixD2smpl import build_smpl_pkl_from_6d_smpl
 from thesis.care_pd.smpl2h36m import convert_smpl_to_h36m
 from thesis.src.evaluate_h36m import H36MEvaluator
+from thesis.src.evaluate_smpl import SMPLEvaluator
 from thesis.src.train import train
 
 CONFIG_PATH = "thesis/configs/baseline.yaml"
@@ -68,12 +69,14 @@ def generate_full_dataset(model, dataset, cfg, device):
 def format_and_convert(data_dict, cfg):
     print("\n--- PHASE 3: FORMAT CONVERSION ---")
     out_dir = Path(cfg['paths']['output_dir'])
-    
-    # Pre-define paths
+
     smpl_dir = out_dir / "SMPL"
     h36m_dir = out_dir / "h36m"
+    sixd_dir = out_dir / "6D_SMPL"
+    
     smpl_dir.mkdir(parents=True, exist_ok=True)
     h36m_dir.mkdir(parents=True, exist_ok=True)
+    sixd_dir.mkdir(parents=True, exist_ok=True)
     
     gt_pkl = smpl_dir / "ground_truth.pkl"
     gen_pkl = smpl_dir / "generated.pkl"
@@ -81,28 +84,47 @@ def format_and_convert(data_dict, cfg):
     gt_h36m = h36m_dir / "ground_truth_3d_world.npz"
     gen_h36m = h36m_dir / "generated_3d_world.npz"
     
-    # ground truth data, skip if exists (assuming using full dataset)
+    gt_6d_npz = sixd_dir / "ground_truth_6d.npz"
+    gen_6d_npz = sixd_dir / "generated_6d.npz"
+
+    gt_dict, gen_dict = {}, {}
+    gt_labels, gen_labels = {"key_to_severity": {}}, {"key_to_severity": {}}
+    
+    print("Formatting and caching raw 6D sequences...")
+    for i, sev in enumerate(data_dict["severities"]):
+        seq_key = f"seq_{i:03d}"
+        
+        # Write to 6D dictionaries
+        gt_dict[seq_key] = data_dict["gt"]["pose"][i].numpy()
+        gt_dict[f"{seq_key}_trans"] = data_dict["gt"]["trans"][i].numpy()
+        
+        gen_dict[seq_key] = data_dict["gen"]["pose"][i].numpy()
+        gen_dict[f"{seq_key}_trans"] = data_dict["gen"]["trans"][i].numpy()
+        
+        # Registry mapping for SMPLEvaluator (Matches 6D Seq keys)
+        gt_labels["key_to_severity"][seq_key] = sev
+        gen_labels["key_to_severity"][seq_key] = sev
+        
+        # Registry mapping for H36MEvaluator (Matches converted .pkl keys)
+        gt_labels["key_to_severity"][f"GT__gt_{i:03d}"] = sev
+        gen_labels["key_to_severity"][f"GEN__gen_{i:03d}"] = sev
+
+    np.savez(gt_6d_npz, **gt_dict)
+    np.savez(gen_6d_npz, **gen_dict)
+    
+    # Convert and save SMPL (.pkl) and H36M (.npz) files
     if gt_h36m.exists() and gt_pkl.exists():
         print("Ground Truth H36M data already exists.")
     else:
         print("Formatting Ground Truth to SMPL...")
         build_smpl_pkl_from_6d_smpl(data_dict["gt"]["pose"], data_dict["gt"]["trans"], str(gt_pkl), "GT", "gt")
         print("Converting Ground Truth SMPL -> H36M (This takes a moment)...")
-        convert_smpl_to_h36m(str(gt_pkl))
+        convert_smpl_to_h36m(str(gt_pkl), str(gt_h36m.parent), gt_h36m.name)
     
-    # generated data
     print("Formatting Generated data to SMPL...")
     build_smpl_pkl_from_6d_smpl(data_dict["gen"]["pose"], data_dict["gen"]["trans"], str(gen_pkl), "GEN", "gen")
     print("Converting Generated SMPL -> H36M...")
-    convert_smpl_to_h36m(str(gen_pkl))
-    
-    # label registry for evaluation
-    gt_labels = {"key_to_severity": {}}
-    gen_labels = {"key_to_severity": {}}
-    
-    for i, sev in enumerate(data_dict["severities"]):
-        gt_labels["key_to_severity"][f"GT__gt_{i:03d}"] = sev
-        gen_labels["key_to_severity"][f"GEN__gen_{i:03d}"] = sev
+    convert_smpl_to_h36m(str(gen_pkl), str(gen_h36m.parent), gen_h36m.name)
         
     gt_labels_path = h36m_dir / "gt_labels.json"
     gen_labels_path = h36m_dir / "gen_labels.json"
@@ -111,6 +133,8 @@ def format_and_convert(data_dict, cfg):
     with open(gen_labels_path, 'w') as f: json.dump(gen_labels, f)
         
     return {
+        "gt_6d": gt_6d_npz,
+        "gen_6d": gen_6d_npz,
         "gt_h36m": gt_h36m,
         "gen_h36m": gen_h36m,
         "gt_labels": gt_labels_path,
@@ -121,18 +145,26 @@ def format_and_convert(data_dict, cfg):
 def evaluate_pipeline(paths):
     print("\n--- PHASE 4: EVALUATION ---")
     evaluator = H36MEvaluator(fps=30)
-    
     evaluator.evaluate_and_cache(
         npz_path=str(paths["gt_h36m"]),
         labels_path=str(paths["gt_labels"]),
         cache_output_path=str(paths["out_dir"] / "evaluation" / "gt_h36m_distributions.pkl")
     )
-    
     evaluator.evaluate_and_cache(
         npz_path=str(paths["gen_h36m"]),
         labels_path=str(paths["gen_labels"]),
         cache_output_path=str(paths["out_dir"] / "evaluation" / "gen_h36m_distributions.pkl")
     )
+
+    smpl_evaluator = SMPLEvaluator()
+    smpl_evaluator.evaluate_and_cache(
+        gt_npz_path=paths["gt_6d"],
+        gen_npz_path=paths["gen_6d"],
+        labels_path=paths["gen_labels"],
+        cache_output_path=str(paths["out_dir"] / "evaluation" / "smpl_mpjae_evaluation.json"),
+        verbose=True
+    )
+
 
 if __name__ == "__main__":
     cfg = load_config()
