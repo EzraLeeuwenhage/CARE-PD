@@ -7,8 +7,9 @@ from torch.utils.data import Dataset, DataLoader
 CONFIG_PATH = "thesis/configs/dataloader.yaml"
 
 class SMPL6DDataset(Dataset):
-    def __init__(self, config_path=CONFIG_PATH):
+    def __init__(self, config_path=CONFIG_PATH, mode='train'):
         super().__init__()
+        self.mode = mode
         
         with open(config_path, 'r') as f:
             self.cfg = yaml.safe_load(f)
@@ -19,6 +20,10 @@ class SMPL6DDataset(Dataset):
         
         # Extract minimum z travel setting with a fallback default of 0.0
         self.min_z_travel = self.cfg['windowing'].get('min_z_travel', 0.0)
+        
+        # Determine split percentages
+        eval_split = self.cfg['training'].get('eval_split', 0.1)
+        test_split = self.cfg['training'].get('test_split', 0.2)
 
         with np.load(self.cfg['data']['6d_smpl_path'], allow_pickle=True) as npz:
             raw_data = {k: np.array(v) for k, v in npz.items()}
@@ -40,16 +45,16 @@ class SMPL6DDataset(Dataset):
         patient_prefix = self.cfg['data'].get('patient_prefix')
         
         if not patient_prefix or str(patient_prefix).lower() == 'all':
-            self.valid_keys = list(self.pose_data.keys())
-            print(f"Using full dataset. Found {len(self.valid_keys)} total valid keys.")
+            all_keys = list(self.pose_data.keys())
         else:
             search_str = f"{patient_prefix}__"
-            self.valid_keys = [k for k in self.pose_data.keys() if k.startswith(search_str)]
-            print(f"Found {len(self.valid_keys)} valid keys for prefix '{patient_prefix}' in the dataset.")
+            all_keys = [k for k in self.pose_data.keys() if k.startswith(search_str)]
             
-        if not self.valid_keys:
+        if not all_keys:
             raise ValueError(f"No keys found for prefix: {patient_prefix}")
-        
+            
+        all_keys.sort()
+
         # use sliding windows to build index map
         self.window_indices = []
         self.discarded_keys = []
@@ -57,9 +62,24 @@ class SMPL6DDataset(Dataset):
         # track statistics on filtered out chunks
         total_chunks_inspected = 0
         
+        # Perform the split
+        num_keys = len(all_keys)
+        num_test = int(num_keys * test_split)
+        num_eval = int(num_keys * eval_split)
+        
+        if mode == 'test':
+            self.valid_keys = all_keys[-num_test:]
+        elif mode == 'eval':
+            self.valid_keys = all_keys[-(num_test + num_eval):-num_test]
+        else:
+            self.valid_keys = all_keys[:-(num_test + num_eval)]
+            
+        print(f"[{mode.upper()} SET] Initializing with {len(self.valid_keys)} unique sequences.")
+
+        self.window_indices = []
         for key in self.valid_keys:
             num_frames = self.pose_data[key].shape[0]
-            
+
             if num_frames >= self.window_size:
                 for start_idx in range(0, num_frames - self.window_size + 1, self.step_size):
                     total_chunks_inspected += 1
@@ -83,6 +103,8 @@ class SMPL6DDataset(Dataset):
         with open(self.cfg['data']['severity_labels_path'], "r") as f:
             metadata = json.load(f)
             self.key_to_severity = metadata["key_to_severity"]
+            
+        print(f"[{mode.upper()} SET] Built {len(self.window_indices)} valid sequence chunks.")
 
     def get_sample_metadata(self, idx):
         """Returns the source sequence key and frame offset for evaluation tracking."""
@@ -126,18 +148,20 @@ class SMPL6DDataset(Dataset):
         return prefix, target, torch.tensor(severity_score, dtype=torch.long)
 
 
-def get_dataloader(config_path=CONFIG_PATH):
-    dataset = SMPL6DDataset(config_path)
+def get_dataloader(config_path=CONFIG_PATH, mode='train'):
+    dataset = SMPL6DDataset(config_path, mode=mode)
     
     with open(config_path, 'r') as f:
         cfg = yaml.safe_load(f)
         
+    is_train = mode == 'train'
+    
     loader = DataLoader(
         dataset,
         batch_size=cfg['training']['batch_size'],
-        shuffle=cfg['training']['shuffle'],
+        shuffle=cfg['training']['shuffle'] if is_train else False,
         num_workers=cfg['training']['num_workers'],
-        drop_last=True
+        drop_last=is_train
     )
     return loader
 

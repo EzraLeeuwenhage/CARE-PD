@@ -1,3 +1,6 @@
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
 import yaml
 import torch
 import torch.nn as nn
@@ -8,6 +11,8 @@ from pathlib import Path
 from thesis.src.model import FlowMatchingMLP
 from thesis.src.dataloader import get_dataloader
 from thesis.src.generate_prior import generate_prior_from_prefix
+from thesis.src.sample import generate_trajectories
+from thesis.src.evaluate_smpl import SMPLEvaluator
 
 CONFIG_PATH = "thesis/configs/dataloader.yaml"
 
@@ -15,27 +20,27 @@ def load_config(config_path=CONFIG_PATH):
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
-def train(model, dataloader, cfg, device=None):
-    """
-    Modular training loop. Can be called from run_pipeline.py or executed directly.
-    """
+def train(model, train_loader, eval_loader, cfg, device=None):
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on device: {device}")
     
     model = model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=cfg['training']['learning_rate'])
+    evaluator = SMPLEvaluator()
     
     epochs = cfg['training']['epochs']
     loss_weight = cfg['training']['loss_weight']
+    eval_interval = cfg['training'].get('eval_interval', 10)
+    eval_batches = cfg['training'].get('eval_batches', 4)
+    
     save_path = Path(cfg['paths']['weights'])
-        
     save_path.parent.mkdir(parents=True, exist_ok=True)
     
     model.train()
     
     for epoch in range(epochs):
-        pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}", leave=False)
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}", leave=False)
         epoch_loss = 0.0
         
         for _, (prefix, target, severity) in enumerate(pbar):
@@ -80,12 +85,26 @@ def train(model, dataloader, cfg, device=None):
             pbar.set_postfix({'loss': f"{loss.item():.4f}"})
             
         # Calculate average loss over epoch
-        avg_epoch_loss = epoch_loss / len(dataloader)
-        
-        if (epoch + 1) % cfg['training']['log_interval'] == 0:
-            print(f"Epoch {epoch+1:04d}/{epochs} | Avg Loss: {avg_epoch_loss:.6f}")
+        avg_epoch_loss = epoch_loss / len(train_loader)
+
+        if (epoch + 1) % eval_interval == 0:
+            eval_data = generate_trajectories(
+                model=model, 
+                dataloader=eval_loader, 
+                num_steps=cfg['sampling']['num_steps'], 
+                device=device, 
+                max_batches=eval_batches, 
+                desc="Evaluating"
+            )
+
+            # Calculate MPJAE on the generated trajectories
+            eval_mpjae = evaluator.compute_mpjae(eval_data['gt']['pose'], eval_data['gen']['pose'])
+            print(f"Epoch {epoch+1:04d}/{epochs} | Train Loss: {avg_epoch_loss:.6f} | Eval MPJAE: {eval_mpjae:.4f} rad")
+            model.train()
             
-    # save model params
+        elif (epoch + 1) % cfg['training']['log_interval'] == 0:
+            print(f"Epoch {epoch+1:04d}/{epochs} | Train Loss: {avg_epoch_loss:.6f}")
+            
     torch.save(model.state_dict(), save_path)
     print(f"\nTraining complete. Model saved to {save_path}")
 

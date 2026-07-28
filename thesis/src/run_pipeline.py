@@ -1,23 +1,20 @@
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
 import json
 import yaml
 import torch
 import numpy as np
-from tqdm import tqdm
 from pathlib import Path
-from torch.utils.data import DataLoader
 
 from thesis.src.model import FlowMatchingMLP
-from thesis.src.dataloader import SMPL6DDataset
-from thesis.src.generate_prior import generate_prior_from_prefix
-from thesis.src.sample import euler_ode_solver
+from thesis.src.dataloader import get_dataloader
+from thesis.src.sample import generate_trajectories
 from thesis.utils.sixD2smpl import build_smpl_pkl_from_6d_smpl
 from thesis.care_pd.smpl2h36m import convert_smpl_to_h36m
 from thesis.src.evaluate_h36m import H36MEvaluator
 from thesis.src.evaluate_smpl import SMPLEvaluator
 from thesis.src.train import train
-
-import warnings
-warnings.simplefilter(action='ignore', category=FutureWarning)
 
 CONFIG_PATH = "thesis/configs/baseline.yaml"
 
@@ -25,52 +22,7 @@ def load_config():
     with open(CONFIG_PATH, 'r') as f:
         return yaml.safe_load(f)
 
-@torch.no_grad()
-def generate_full_dataset(model, dataset, cfg, device):
-    print("\n--- PHASE 2: DATASET GENERATION ---")
-    loader = DataLoader(dataset, batch_size=cfg['training']['batch_size'], shuffle=False)
-    model.eval()
-    
-    all_gt_pose, all_gt_trans = [], []
-    all_gen_pose, all_gen_trans = [], []
-    all_severities = []
-    
-    num_steps = cfg['sampling']['num_steps']
-    
-    for prefix, target, severity in tqdm(loader, desc="Generating Suffixes"):
-        prefix = {k: v.to(device) for k, v in prefix.items()}
-        target = {k: v.to(device) for k, v in target.items()}
-        severity = severity.to(device)
-        
-        gt_pose = torch.cat([prefix['pose'], target['pose']], dim=1).cpu()
-        gt_trans = torch.cat([prefix['trans'], target['trans']], dim=1).cpu()
-        all_gt_pose.append(gt_pose)
-        all_gt_trans.append(gt_trans)
-        
-        x_0 = generate_prior_from_prefix(prefix, target)
-        generated_suffix = euler_ode_solver(model, prefix, x_0, severity, num_steps=num_steps)
-        
-        gen_pose = torch.cat([prefix['pose'], generated_suffix['pose']], dim=1).cpu()
-        gen_trans = torch.cat([prefix['trans'], generated_suffix['trans']], dim=1).cpu()
-        all_gen_pose.append(gen_pose)
-        all_gen_trans.append(gen_trans)
-        
-        all_severities.extend(severity.cpu().tolist())
-
-    return {
-        "gt": {
-            "pose": torch.cat(all_gt_pose, dim=0),
-            "trans": torch.cat(all_gt_trans, dim=0)
-        },
-        "gen": {
-            "pose": torch.cat(all_gen_pose, dim=0),
-            "trans": torch.cat(all_gen_trans, dim=0)
-        },
-        "severities": all_severities
-    }
-
 def format_and_convert(data_dict, cfg):
-    print("\n--- PHASE 3: FORMAT CONVERSION ---")
     out_dir = Path(cfg['paths']['output_dir'])
 
     smpl_dir = out_dir / "SMPL"
@@ -146,7 +98,6 @@ def format_and_convert(data_dict, cfg):
     }
 
 def evaluate_pipeline(paths):
-    print("\n--- PHASE 4: EVALUATION ---")
     evaluator = H36MEvaluator(fps=30)
     evaluator.evaluate_and_cache(
         npz_path=str(paths["gt_h36m"]),
@@ -173,29 +124,35 @@ if __name__ == "__main__":
     cfg = load_config()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Initializing Unified Pipeline on: {device.type.upper()}")
-    
-    dataset = SMPL6DDataset(config_path=CONFIG_PATH)
+
     model = FlowMatchingMLP(config_path=CONFIG_PATH).to(device)
 
     # # optional train time optimization
     # model = torch.compile(model)
+
+    train_loader = get_dataloader(config_path=CONFIG_PATH, mode='train')
+    eval_loader = get_dataloader(config_path=CONFIG_PATH, mode='eval')
+    test_loader = get_dataloader(config_path=CONFIG_PATH, mode='test')
     
     print("\n--- PHASE 1: TRAINING ---")
-    loader = DataLoader(
-        dataset, 
-        batch_size=cfg['training']['batch_size'], 
-        shuffle=cfg['training']['shuffle'],
-        num_workers=cfg['training']['num_workers'],
-        pin_memory=True,
-        drop_last=True
-    )
-    
-    train(model, loader, cfg, device=device)
-    
+    train(model, train_loader, eval_loader, cfg, device=device)
+
+    print("\n--- PHASE 2: DATASET GENERATION ---")
     model.load_state_dict(torch.load(cfg['paths']['weights'], map_location=device))
     
-    data_dict = generate_full_dataset(model, dataset, cfg, device)
+    data_dict = generate_trajectories(
+        model=model, 
+        dataloader=test_loader, 
+        num_steps=cfg['sampling']['num_steps'], 
+        device=device,
+        max_batches=-1,
+        desc="Generating Final Test Set"
+    )
+    
+    print("\n--- PHASE 3: FORMAT CONVERSION ---")
     paths = format_and_convert(data_dict, cfg)
+
+    print("\n--- PHASE 4: EVALUATION ---")
     evaluate_pipeline(paths)
     
     print("\nPipeline Finished Successfully!")

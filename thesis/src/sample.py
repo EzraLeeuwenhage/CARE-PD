@@ -3,6 +3,7 @@ import subprocess
 import yaml
 import torch
 import numpy as np
+from tqdm import tqdm
 from pathlib import Path
 from thesis.care_pd.smpl2h36m import convert_smpl_to_h36m
 from thesis.utils.sixD2smpl import build_smpl_pkl_from_6d_smpl
@@ -63,6 +64,55 @@ def euler_ode_solver(model, prefix_dict, x_0_dict, severity_score, num_steps=100
             x_t['trans'] = x_t['trans'] + (velocity['trans'] * dt)
                 
     return x_t
+
+@torch.no_grad()
+def generate_trajectories(model, dataloader, num_steps, device, max_batches=-1, desc="Generating"):
+    """
+    Generic function to generate sequences from a dataloader. 
+    Can be used for full dataset generation or quick mid-training evaluation.
+    """
+    model.eval()
+    
+    all_gt_pose, all_gt_trans = [], []
+    all_gen_pose, all_gen_trans = [], []
+    all_severities = []
+    
+    for i, (prefix, target, severity) in enumerate(tqdm(dataloader, desc=desc, leave=False)):
+        if max_batches > 0 and i >= int(max_batches):
+            break
+            
+        prefix = {k: v.to(device) for k, v in prefix.items()}
+        target = {k: v.to(device) for k, v in target.items()}
+        severity = severity.to(device)
+        
+        # Ground Truth full sequences
+        gt_pose = torch.cat([prefix['pose'], target['pose']], dim=1).cpu()
+        gt_trans = torch.cat([prefix['trans'], target['trans']], dim=1).cpu()
+        all_gt_pose.append(gt_pose)
+        all_gt_trans.append(gt_trans)
+        
+        # Generated full sequences
+        x_0 = generate_prior_from_prefix(prefix, target)
+        generated_suffix = euler_ode_solver(model, prefix, x_0, severity, num_steps=num_steps)
+        
+        gen_pose = torch.cat([prefix['pose'], generated_suffix['pose']], dim=1).cpu()
+        gen_trans = torch.cat([prefix['trans'], generated_suffix['trans']], dim=1).cpu()
+        all_gen_pose.append(gen_pose)
+        all_gen_trans.append(gen_trans)
+        
+        all_severities.extend(severity.cpu().tolist())
+
+    return {
+        "gt": {
+            "pose": torch.cat(all_gt_pose, dim=0),
+            "trans": torch.cat(all_gt_trans, dim=0)
+        },
+        "gen": {
+            "pose": torch.cat(all_gen_pose, dim=0),
+            "trans": torch.cat(all_gen_trans, dim=0)
+        },
+        "severities": all_severities
+    }
 
 
 if __name__ == "__main__":

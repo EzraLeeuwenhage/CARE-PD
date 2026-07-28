@@ -1,4 +1,5 @@
 import pickle
+import json
 import argparse
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -12,10 +13,7 @@ def load_data(pkl_path):
         return pickle.load(f)
 
 def prepare_dataframe(data):
-    """
-    Converts the nested dictionary of arrays from H36MEvaluator into a 
-    long-form Pandas DataFrame, making Seaborn plotting extremely easy.
-    """
+    """Converts the nested dictionary of arrays into dataframe for seaborn"""
     records = []
     # Ensure 'overall' is plotted first, followed by sorted class IDs (0, 1, 2, 3)
     keys = ["overall"] + sorted([k for k in data.keys() if k != "overall"])
@@ -310,20 +308,67 @@ def plot_pd_feature_split_violins(df, distances_df, output_dir):
         plt.close()
 
 
+def plot_smpl_mpjae(json_path, output_dir):
+    """Plots the sequence-level MPJAE distributions from the JSON cache."""
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+
+    raw_dist = data.get("raw_distributions", {})
+    if not raw_dist:
+        print("No SMPL distributions found in JSON.")
+        return
+
+    records = []
+    # Sort keys, keeping 'Overall' first
+    keys = ["Overall"] + sorted([k for k in raw_dist.keys() if k != "Overall"])
+    for k in keys:
+        for val in raw_dist[k]:
+            records.append({"Severity Class": k, "MPJAE (rad)": val})
+
+    df = pd.DataFrame(records)
+
+    plt.figure(figsize=(8, 5))
+    sns.violinplot(
+        data=df, 
+        x="Severity Class", 
+        y="MPJAE (rad)", 
+        order=keys, 
+        inner="quartile", 
+        color="lightcoral"
+    )
+    
+    plt.title("6D Pose Reconstruction Error (Sequence MPJAE)", fontsize=14, fontweight='bold', pad=10)
+    plt.ylabel("Angular Error (radians)")
+    plt.grid(axis='y', linestyle='--', alpha=0.5)
+
+    out_path = Path(output_dir) / "03_smpl_mpjae_summary.png"
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=300)
+    plt.close()
+    print(f"Saved SMPL MPJAE plot to: {out_path}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--gt", type=str, 
-                        default="thesis/data/processed/baseline_model/evaluation/gt_h36m_distributions_new_metrics.pkl")
+                        default="thesis/data/processed/baseline_model_v2/evaluation/gt_h36m_distributions.pkl")
     parser.add_argument("--gen", type=str, 
-                        default="thesis/data/processed/baseline_model/evaluation/gen_h36m_distributions_new_metrics.pkl")
-    parser.add_argument("-o", "--output", type=str, default="thesis/visualizations/test")
+                        default="thesis/data/processed/baseline_model_v2/evaluation/gen_h36m_distributions.pkl")
+    parser.add_argument("--smpl", type=str, 
+                            default="thesis/data/processed/baseline_model_v2/evaluation/smpl_mpjae_evaluation.json")
+    parser.add_argument("-o", "--output", type=str, 
+                        default="thesis/visualizations/baseline_model_v2")
     args = parser.parse_args()
 
     gt_path = Path(args.gt)
     gen_path = Path(args.gen)
+    smpl_path = Path(args.smpl)
     output_dir = Path(args.output)
     
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if smpl_path.exists():
+        plot_smpl_mpjae(args.smpl, output_dir)
 
     if not gt_path.exists() or not gen_path.exists():
         print("Could not find required .pkl files.")
@@ -331,11 +376,11 @@ if __name__ == "__main__":
         print("Loading cached distributions...")
         gt_data = load_data(gt_path)
 
-        # # GT visuals
-        # gt_df = prepare_dataframe(gt_data)
-        # plot_sequence_length_distribution(gt_df, output_dir)
-        # plot_physical_realism_grouped(gt_df, output_dir)
-        # plot_pd_feature_violins(gt_df, output_dir)
+        # GT visuals
+        gt_df = prepare_dataframe(gt_data)
+        plot_sequence_length_distribution(gt_df, output_dir)
+        plot_physical_realism_grouped(gt_df, output_dir)
+        plot_pd_feature_violins(gt_df, output_dir)
 
         # Combined split violin plots for GT and generated data
         gen_data = load_data(gen_path)
