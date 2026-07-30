@@ -143,7 +143,7 @@ def plot_smpl_mpjae(json_path, output_dir):
 
 
 if __name__ == "__main__":
-    model_folder = "baseline_model_v2_epochs100"
+    model_folder = "baseline_model_v2_epochs1000"
     base_dir = f"thesis/data/processed/{model_folder}/evaluation"
     
     parser = argparse.ArgumentParser()
