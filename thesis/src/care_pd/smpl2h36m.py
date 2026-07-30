@@ -84,7 +84,7 @@ def convert_smpl_to_h36m(input_filename, output_dir=None, output_filename=None):
     cfg = SimpleNamespace()
 
     cfg.output_filename = output_filename
-        
+    # TODO: copy regressor and body model files over to thesis folder
     cfg.H36M_J_REG = Path('./data/preprocessing/common/J_regressor_h36m_correct.npy')
     cfg.MODEL_PATH = Path('./data/preprocessing/common/body_models/smpl/SMPL_NEUTRAL.pkl')
     cfg.DATA_DIR = input_path
