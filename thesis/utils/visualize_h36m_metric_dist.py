@@ -36,44 +36,45 @@ def prepare_dataframe(data):
 # ---------------------------------------------------------
 # PHYSICAL REALISM
 # ---------------------------------------------------------
-def plot_physical_realism_grouped(df, output_dir):
+def plot_physical_realism_grouped(df, output_dir, prefix="", dataset_label=""):
     """Creates grouped violin plots comparing Overall and Per-Class distributions."""
     sns.set_theme(style="whitegrid")
     
     # Get correct ordering for x-axis
     order = df["Class_Label"].unique()
+    title_suffix = f" ({dataset_label})" if dataset_label else ""
 
     # Floating & Stance Anchoring
     fig, axes = plt.subplots(1, 2, figsize=(18, 5))
     
     sns.violinplot(data=df, x="Class_Label", y="floating", ax=axes[0], color="mediumaquamarine", inner="quartile", order=order)
-    axes[0].set_title("Floating (Lowest Foot Y-Coord at Strike)", fontsize=12, fontweight='bold')
+    axes[0].set_title(f"Floating (Lowest Foot Y-Coord at Strike){title_suffix}", fontsize=12, fontweight='bold')
     axes[0].set_ylabel("Vertical Position (meters)")
     axes[0].set_xlabel("")
 
     sns.violinplot(data=df, x="Class_Label", y="mean_stance_displacement", ax=axes[1], color="turquoise", inner="quartile", order=order)
-    axes[1].set_title("Stance Anchoring (Mean Displacement)", fontsize=12, fontweight='bold')
+    axes[1].set_title(f"Stance Anchoring (Mean Displacement){title_suffix}", fontsize=12, fontweight='bold')
     axes[1].set_ylabel("Displacement (m)")
     axes[1].set_xlabel("")
 
     plt.tight_layout()
-    plt.savefig(output_dir / "01b_phys_environment.png", dpi=300)
+    plt.savefig(output_dir / f"{prefix}01b_phys_environment.png", dpi=300)
     plt.close()
 
     # Structural Constancy
     plt.figure(figsize=(10, 5))
     sns.violinplot(data=df, x="Class_Label", y="mean_bone_length_variance", color="plum", inner="quartile", order=order)
-    plt.title("Structural Constancy (Mean Bone Length Variance)", fontsize=14, pad=10, fontweight='bold')
+    plt.title(f"Structural Constancy (Mean Bone Length Variance){title_suffix}", fontsize=14, pad=10, fontweight='bold')
     plt.ylabel("Variance (m²)")
     plt.xlabel("")
     plt.tight_layout()
-    plt.savefig(output_dir / "01c_phys_bones.png", dpi=300)
+    plt.savefig(output_dir / f"{prefix}01c_phys_bones.png", dpi=300)
     plt.close()
 
 # ---------------------------------------------------------
 # PD FEATURES
 # ---------------------------------------------------------
-def plot_pd_feature_violins(df, output_dir):
+def plot_pd_feature_violins(df, output_dir, prefix="", dataset_label=""):
     """
     Plots violin distributions for specified clinical features.
     Seaborn handles NaNs natively during plotting.
@@ -92,6 +93,7 @@ def plot_pd_feature_violins(df, output_dir):
     axes_flat = axes.flatten()
 
     labels = df["Class_Label"].unique() 
+    title_suffix = f" ({dataset_label})" if dataset_label else ""
 
     for idx, feat_info in enumerate(features):
         ax = axes_flat[idx]
@@ -129,20 +131,22 @@ def plot_pd_feature_violins(df, output_dir):
         ax.set_xlabel("Severity Class")
         ax.grid(axis='y', linestyle='--', alpha=0.5)
 
-    plt.suptitle("Clinical PD Features by Severity Class", fontsize=16, fontweight='bold', y=1.02)
+    plt.suptitle(f"Clinical PD Features by Severity Class{title_suffix}", fontsize=16, fontweight='bold', y=1.02)
     plt.tight_layout()
-    plt.savefig(output_dir / "02_pd_features_summary.png", dpi=300, bbox_inches='tight')
+    plt.savefig(output_dir / f"{prefix}02_pd_features_summary.png", dpi=300, bbox_inches='tight')
     plt.close()
 
 # ---------------------------------------------------------
 # SEQUENCE LENGTH DISTRIBUTION
 # ---------------------------------------------------------
-def plot_sequence_length_distribution(df, output_dir):
+def plot_sequence_length_distribution(df, output_dir, prefix="", dataset_label=""):
     df_clean = df.dropna(subset=["sequence_length"])
     
     if df_clean.empty:
         print("No sequence length data found to plot.")
         return
+
+    title_suffix = f" - {dataset_label}" if dataset_label else ""
 
     # overall distribution
     overall_df = df_clean[df_clean["Class_ID"] == "overall"]
@@ -154,7 +158,7 @@ def plot_sequence_length_distribution(df, output_dir):
     median_len = overall_df["sequence_length"].median()
     N = len(overall_df)
     
-    plt.title(f"Overall Sequence Lengths (N={N})", fontsize=14, fontweight='bold', pad=10)
+    plt.title(f"Overall Sequence Lengths{title_suffix} (N={N})", fontsize=14, fontweight='bold', pad=10)
     plt.xlabel("Sequence Length (Frames)", fontsize=12)
     plt.ylabel("Frequency", fontsize=12)
     plt.axvline(mean_len, color='red', linestyle='dashed', linewidth=2, label=f'Mean: {mean_len:.1f}')
@@ -162,7 +166,7 @@ def plot_sequence_length_distribution(df, output_dir):
     plt.legend()
     plt.grid(axis='y', linestyle='--', alpha=0.7)
     plt.tight_layout()
-    plt.savefig(output_dir / "00a_sequence_length_overall.png", dpi=300)
+    plt.savefig(output_dir / f"{prefix}00a_sequence_length_overall.png", dpi=300)
     plt.close()
 
     # separate distributions per class
@@ -193,9 +197,9 @@ def plot_sequence_length_distribution(df, output_dir):
         ax.legend()
         ax.grid(axis='y', linestyle='--', alpha=0.7)
 
-    plt.suptitle("Sequence Length Distributions by Severity Class", fontsize=16, fontweight='bold', y=1.02)
+    plt.suptitle(f"Sequence Length Distributions by Severity Class{title_suffix}", fontsize=16, fontweight='bold', y=1.02)
     plt.tight_layout()
-    plt.savefig(output_dir / "00b_sequence_length_per_class.png", dpi=300, bbox_inches='tight')
+    plt.savefig(output_dir / f"{prefix}00b_sequence_length_per_class.png", dpi=300, bbox_inches='tight')
     plt.close()
 
 # ---------------------------------------------------------
@@ -332,16 +336,23 @@ if __name__ == "__main__":
     else:
         print("Loading cached distributions...")
         gt_data = load_data(gt_path)
-
-        # GT visuals
-        gt_df = prepare_dataframe(gt_data)
-        plot_sequence_length_distribution(gt_df, output_dir)
-        plot_physical_realism_grouped(gt_df, output_dir)
-        plot_pd_feature_violins(gt_df, output_dir)
-
-        # Combined split violin plots for GT and generated data
         gen_data = load_data(gen_path)
 
+        # GT visuals
+        print("Generating Ground Truth standalone visualizations...")
+        gt_df = prepare_dataframe(gt_data)
+        plot_sequence_length_distribution(gt_df, output_dir, prefix="gt_", dataset_label="Ground Truth")
+        plot_physical_realism_grouped(gt_df, output_dir, prefix="gt_", dataset_label="Ground Truth")
+        plot_pd_feature_violins(gt_df, output_dir, prefix="gt_", dataset_label="Ground Truth")
+
+        # Synthetic data visuals
+        print("Generating Generated standalone visualizations...")
+        gen_df = prepare_dataframe(gen_data)
+        plot_sequence_length_distribution(gen_df, output_dir, prefix="gen_", dataset_label="Generated")
+        plot_physical_realism_grouped(gen_df, output_dir, prefix="gen_", dataset_label="Generated")
+        plot_pd_feature_violins(gen_df, output_dir, prefix="gen_", dataset_label="Generated")
+
+        # Combined split violin plots for GT vs Generated data
         print("Computing distribution distances for split violin plot...")
         comparator = DistributionComparator()
         results = comparator.compare(gt_data, gen_data)

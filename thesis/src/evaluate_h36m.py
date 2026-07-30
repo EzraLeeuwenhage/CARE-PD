@@ -339,7 +339,7 @@ class H36MEvaluator:
                 
         return distributions, heel_strikes_registry
 
-    def evaluate_and_cache(self, npz_path, labels_path, cache_output_path):
+    def evaluate_and_cache(self, npz_path, labels_path, cache_output_path, synthetic=False):
         """Process and save the raw distributions and heel strike markers."""
         distributions, heel_strikes_registry = self.process_dataset(npz_path, labels_path)
         
@@ -348,8 +348,12 @@ class H36MEvaluator:
         
         with open(out_path, 'wb') as f:
             pickle.dump(distributions, f)
-            
-        hs_out_path = Path(npz_path).parent / "heel_strikes.json"
+
+        if synthetic:
+            hs_out_path = Path(npz_path).parent / "gen_heel_strikes.json"
+        else:
+            hs_out_path = Path(npz_path).parent / "gt_heel_strikes.json"
+
         with open(hs_out_path, 'w') as f:
             json.dump(heel_strikes_registry, f, indent=4)
             
@@ -364,7 +368,6 @@ if __name__ == "__main__":
     labels_path = Path("thesis/data/processed/baseline_model/h36m/gen_labels.json") 
     output_path = Path("thesis/data/processed/baseline_model/evaluation/gen_h36m_distributions_new_metrics.pkl")
 
-    print(f"--- Generating Ground Truth H36M Evaluation Metrics ---")
     print(f"Data path:   {data_path}")
     print(f"Labels path: {labels_path}")
     print(f"Output path: {output_path}")
@@ -372,7 +375,8 @@ if __name__ == "__main__":
     ground_truth_distributions = evaluator.evaluate_and_cache(
         npz_path=str(data_path),
         labels_path=str(labels_path),
-        cache_output_path=str(output_path)
+        cache_output_path=str(output_path),
+        synthetic=True
     )
 
     print("\n Ground Truth Extraction Complete!")

@@ -100,8 +100,8 @@ def analyze_alternation(hs_path, labels_path):
         print(f"{v['clip_id']:<15} | {v['severity']:<5} | {v['total_strikes']:<7} | {v['violations']:<6} | ")
 
 if __name__ == "__main__":
-    hs_path = Path("thesis/data/processed/ground_truth_chunks/h36m/heel_strikes.json")
-    labels_path = Path("thesis/data/processed/ground_truth_chunks/h36m/gt_labels.json")
+    hs_path = Path("thesis/data/processed/baseline_model_v2_epochs100/h36m/heel_strikes.json")
+    labels_path = Path("thesis/data/processed/baseline_model_v2_epochs100/h36m/gen_labels.json")
     
     if not hs_path.exists():
         print(f"Error: Could not find {hs_path}")

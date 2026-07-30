@@ -107,7 +107,8 @@ def evaluate_pipeline(paths):
     evaluator.evaluate_and_cache(
         npz_path=str(paths["gen_h36m"]),
         labels_path=str(paths["gen_labels"]),
-        cache_output_path=str(paths["out_dir"] / "evaluation" / "gen_h36m_distributions.pkl")
+        cache_output_path=str(paths["out_dir"] / "evaluation" / "gen_h36m_distributions.pkl"),
+        synthetic=True
     )
 
     smpl_evaluator = SMPLEvaluator()
