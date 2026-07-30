@@ -3,6 +3,7 @@ import yaml
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
+from collections import defaultdict
 
 CONFIG_PATH = "thesis/configs/dataloader.yaml"
 
@@ -58,50 +59,48 @@ class SMPL6DDataset(Dataset):
             metadata = json.load(f)
             self.key_to_severity = metadata["key_to_severity"]
 
-        self.valid_keys = self._get_stratified_keys(
-            all_keys=all_keys, 
+        # Pre-filter sequences so ONLY those that produce >= 1 valid chunk enter the split pool
+        valid_pool_keys, discarded_short, discarded_no_travel = self._filter_valid_sequences(all_keys)
+        self.discarded_keys = discarded_short
+
+        self.valid_keys, seq_stats = self._get_stratified_keys(
+            all_keys=valid_pool_keys, 
             mode=mode, 
             eval_split=eval_split, 
             test_split=test_split
         )
-        print(f"[{mode.upper()} SET] Initialized with {len(self.valid_keys)} stratified sequences total.")
 
         # use sliding windows to build index map
         self.window_indices = []
-        self.discarded_keys = []
-        
-        # track statistics on filtered out chunks
         total_chunks_inspected = 0
-
-        self.window_indices = []
+        chunk_counts = defaultdict(int)
+        
         for key in self.valid_keys:
             num_frames = self.pose_data[key].shape[0]
+            base_key = key.split('_down')[0] if '_down' in key else key
+            sev = self.key_to_severity.get(base_key, 0)
 
-            if num_frames >= self.window_size:
-                for start_idx in range(0, num_frames - self.window_size + 1, self.step_size):
-                    total_chunks_inspected += 1
-                    end_idx = start_idx + self.window_size
-                    
-                    # Compute Z-distance travelled across this specific sequence chunk
-                    start_z = self.trans_data[key][start_idx, 2]
-                    end_z = self.trans_data[key][end_idx - 1, 2]
-                    z_travel = abs(end_z - start_z)
-                    
-                    if z_travel >= self.min_z_travel:
-                        self.window_indices.append((key, start_idx))
-            else:
-                self.discarded_keys.append(key)
-                    
-        print(f"Dataset initialized with {len(self.window_indices)} sequence chunks (Filtered out \
-              {total_chunks_inspected - len(self.window_indices)} chunks with < {self.min_z_travel}m Z-travel).")
-        print(f"Discarded {len(self.discarded_keys)} keys due to insufficient sequence length: {self.discarded_keys}")
+            for start_idx in range(0, num_frames - self.window_size + 1, self.step_size):
+                total_chunks_inspected += 1
+                end_idx = start_idx + self.window_size
 
-        # load severity labels registry
-        with open(self.cfg['data']['severity_labels_path'], "r") as f:
-            metadata = json.load(f)
-            self.key_to_severity = metadata["key_to_severity"]
-            
-        print(f"[{mode.upper()} SET] Built {len(self.window_indices)} valid sequence chunks.")
+                # Compute Z-distance travelled across this specific sequence chunk
+                start_z = self.trans_data[key][start_idx, 2]
+                end_z = self.trans_data[key][end_idx - 1, 2]
+                z_travel = abs(end_z - start_z)
+                
+                if z_travel >= self.min_z_travel:
+                    self.window_indices.append((key, start_idx))
+                    chunk_counts[sev] += 1
+                
+        self._print_split_summary(
+            mode=mode,
+            seq_stats=seq_stats,
+            chunk_counts=chunk_counts,
+            total_inspected=total_chunks_inspected,
+            discarded_keys=self.discarded_keys,
+            discarded_no_travel=discarded_no_travel
+        )
 
     def _get_stratified_keys(self, all_keys, mode, eval_split, test_split):
         """Deterministically splits sequence keys by clinical severity class."""
@@ -114,14 +113,16 @@ class SMPL6DDataset(Dataset):
             class_groups[sev].append(k)
 
         stratified_keys = []
+        seq_stats = {}
+        
         for sev, keys_in_class in sorted(class_groups.items()):
-            keys_in_class.sort()
+            keys_in_class.sort()  # Ensure deterministic order within class
             
             n_cls = len(keys_in_class)
-            n_test = int(n_cls * test_split)
-            n_eval = int(n_cls * eval_split)
-         
-            train_end = n_cls - n_eval - n_test
+            n_test = max(1, int(n_cls * test_split)) if n_cls >= 1 else 0
+            n_eval = max(1, int(n_cls * eval_split)) if n_cls >= 2 else 0
+            
+            train_end = max(0, n_cls - n_eval - n_test)
             eval_end = n_cls - n_test
             
             if mode == 'train':
@@ -132,9 +133,72 @@ class SMPL6DDataset(Dataset):
                 selected = keys_in_class[eval_end:]
                 
             stratified_keys.extend(selected)
-            print(f"  -> Class {sev}: Added {len(selected)}/{n_cls} sequences to {mode.upper()} set.")
+            seq_stats[sev] = (len(selected), n_cls)
             
-        return stratified_keys
+        return stratified_keys, seq_stats
+
+    def _filter_valid_sequences(self, all_keys):
+        """Pre-filters sequences to only include those that yield at least 1 valid chunk."""
+        valid_seq_keys = []
+        discarded_short = []
+        discarded_no_travel = []
+        
+        for key in all_keys:
+            num_frames = self.pose_data[key].shape[0]
+            if num_frames < self.window_size:
+                discarded_short.append(key)
+                continue
+            
+            # Fast check: does at least ONE window satisfy min_z_travel?
+            has_valid_chunk = False
+            for start_idx in range(0, num_frames - self.window_size + 1, self.step_size):
+                end_idx = start_idx + self.window_size
+                start_z = self.trans_data[key][start_idx, 2]
+                end_z = self.trans_data[key][end_idx - 1, 2]
+                
+                if abs(end_z - start_z) >= self.min_z_travel:
+                    has_valid_chunk = True
+                    break
+                    
+            if has_valid_chunk:
+                valid_seq_keys.append(key)
+            else:
+                discarded_no_travel.append(key)
+                
+        return valid_seq_keys, discarded_short, discarded_no_travel
+
+    def _print_split_summary(self, mode, seq_stats, chunk_counts, total_inspected, discarded_keys, discarded_no_travel):
+        """Prints a clean, organized table of sequence and chunk counts per class."""
+        print(f"{mode.upper()} SET")
+        print(f" {'Severity':<10} | {'Sequences (Split / Total)':<26} | {'Valid Chunks':<12}")
+        print("-" * 65)
+        
+        total_seq_selected = 0
+        total_seq_all = 0
+        total_chunks = 0
+        
+        for sev in sorted(seq_stats.keys()):
+            sel_seq, all_seq = seq_stats[sev]
+            chunks = chunk_counts.get(sev, 0)
+            
+            total_seq_selected += sel_seq
+            total_seq_all += all_seq
+            total_chunks += chunks
+            
+            seq_str = f"{sel_seq} / {all_seq}"
+            print(f"  Class {sev:<4} | {seq_str:<26} | {chunks:>10,}")
+            
+        print("-" * 65)
+        total_seq_str = f"{total_seq_selected} / {total_seq_all}"
+        print(f" {'TOTAL':<10} | {total_seq_str:<26} | {total_chunks:>10,}")
+        
+        filtered_out = total_inspected - total_chunks
+        if filtered_out > 0:
+            print(f"  * Filtered out {filtered_out:,} individual chunks with < {self.min_z_travel}m Z-travel.")
+        if discarded_no_travel:
+            print(f"  * Excluded {len(discarded_no_travel)} entire sequence(s) from split pool (0 valid chunks >= {self.min_z_travel}m).")
+        if discarded_keys:
+            print(f"  * Discarded {len(discarded_keys)} short sequence(s) (< {self.window_size} frames): {discarded_keys}")
 
     def __len__(self):
         return len(self.window_indices)

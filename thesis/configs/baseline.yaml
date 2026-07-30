@@ -11,7 +11,7 @@ windowing:
   min_z_travel: 0.5
 
 training:
-  epochs: 50
+  epochs: 1
   learning_rate: 0.001
   batch_size: 32
   shuffle: true
