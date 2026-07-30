@@ -309,13 +309,16 @@ def plot_pd_feature_split_violins(df, distances_df, output_dir):
 
 
 if __name__ == "__main__":
+    model_folder = "baseline_model_v2_epochs100"
+    base_dir = f"thesis/data/processed/{model_folder}/evaluation"
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--gt", type=str, 
-                        default="thesis/data/processed/baseline_model_v2/evaluation/gt_h36m_distributions.pkl")
+                        default=f"{base_dir}/gt_h36m_distributions.pkl")
     parser.add_argument("--gen", type=str, 
-                        default="thesis/data/processed/baseline_model_v2/evaluation/gen_h36m_distributions.pkl")
+                        default=f"{base_dir}/gen_h36m_distributions.pkl")
     parser.add_argument("-o", "--output", type=str, 
-                        default="thesis/visualizations/baseline_model_v2")
+                        default=f"thesis/visualizations/{model_folder}")
     args = parser.parse_args()
 
     gt_path = Path(args.gt)

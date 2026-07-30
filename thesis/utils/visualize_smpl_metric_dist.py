@@ -7,7 +7,7 @@ import pandas as pd
 from pathlib import Path
 
 def plot_smpl_mpjae(json_path, output_dir):
-    """Plots clean, uncluttered SMPL MPJAE breakdowns by category and by individual joint."""
+    """Plots SMPL MPJAE by category and by individual joint in degrees."""
     with open(json_path, 'r') as f:
         data = json.load(f)
 
@@ -44,7 +44,7 @@ def plot_smpl_mpjae(json_path, output_dir):
                     cat_records.append({
                         "Severity Class": cls_key,
                         "Category": cat_name,
-                        "MPJAE (rad)": val
+                        "MPJAE (deg)": np.degrees(val)
                     })
     df_cat = pd.DataFrame(cat_records)
 
@@ -55,14 +55,14 @@ def plot_smpl_mpjae(json_path, output_dir):
     sns.violinplot(
         data=df_cat_overall, 
         x="Category", 
-        y="MPJAE (rad)", 
+        y="MPJAE (deg)", 
         ax=axes[0], 
         order=categories,
         inner="quartile", 
         color="lightcoral"
     )
     axes[0].set_title("6D Pose Reconstruction Error by Body Region (Overall Dataset)", fontsize=13, fontweight='bold')
-    axes[0].set_ylabel("Angular Error (radians)")
+    axes[0].set_ylabel("Angular Error (degrees)")
     axes[0].set_xlabel("")
     axes[0].tick_params(axis='x', rotation=30)
 
@@ -72,7 +72,7 @@ def plot_smpl_mpjae(json_path, output_dir):
     sns.barplot(
         data=df_cat_classes, 
         x="Category", 
-        y="MPJAE (rad)", 
+        y="MPJAE (deg)", 
         hue="Severity Class", 
         ax=axes[1],
         order=categories, 
@@ -81,7 +81,7 @@ def plot_smpl_mpjae(json_path, output_dir):
         errorbar="se"
     )
     axes[1].set_title("Mean Angular Error by Region across Severity Classes", fontsize=13, fontweight='bold')
-    axes[1].set_ylabel("Mean MPJAE (radians)")
+    axes[1].set_ylabel("Mean MPJAE (degrees)")
     axes[1].set_xlabel("")
     axes[1].tick_params(axis='x', rotation=30)
     axes[1].legend(title="Severity Class", loc="upper right")
@@ -102,35 +102,35 @@ def plot_smpl_mpjae(json_path, output_dir):
             for val in overall_metrics[joint_name]:
                 joint_records.append({
                     "Joint": joint_name,
-                    "MPJAE (rad)": val
+                    "MPJAE (deg)": np.degrees(val)
                 })
     df_joints = pd.DataFrame(joint_records)
 
     # Sort joints by median error so the plot naturally ranks hardest vs. easiest joints
-    joint_order = df_joints.groupby("Joint")["MPJAE (rad)"].median().sort_values(ascending=False).index
+    joint_order = df_joints.groupby("Joint")["MPJAE (deg)"].median().sort_values(ascending=False).index
 
     plt.figure(figsize=(10, 8))
     sns.boxplot(
         data=df_joints, 
         y="Joint", 
-        x="MPJAE (rad)", 
+        x="MPJAE (deg)", 
         order=joint_order,
         palette="vlag_r", 
         showfliers=False
     )
 
     # Vertical dashed red line for Overall Mean MPJAE across all joints
-    overall_mean = np.mean(overall_metrics.get("Overall", [0]))
+    overall_mean = np.degrees(np.mean(overall_metrics.get("Overall", [0])))
     plt.axvline(
         overall_mean, 
         color="red", 
         linestyle="--", 
         linewidth=1.8, 
-        label=f"Overall Mean: {overall_mean:.4f} rad"
+        label=f"Overall Mean: {overall_mean:.2f}°"
     )
 
     plt.title("Error Breakdown across all 24 SMPL Joints (Ranked by Median Error)", fontsize=14, fontweight='bold', pad=12)
-    plt.xlabel("Angular Error (radians)")
+    plt.xlabel("Angular Error (degrees)")
     plt.ylabel("")
     plt.legend(loc="upper right")
     plt.grid(axis='x', linestyle='--', alpha=0.6)
@@ -143,14 +143,17 @@ def plot_smpl_mpjae(json_path, output_dir):
 
 
 if __name__ == "__main__":
+    model_folder = "baseline_model_v2_epochs100"
+    base_dir = f"thesis/data/processed/{model_folder}/evaluation"
+    
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--smpl", type=str, 
-        default="thesis/data/processed/baseline_model_v2/evaluation/smpl_mpjae_evaluation.json",
+        default=f"{base_dir}/smpl_mpjae_evaluation.json",
     )
     parser.add_argument(
         "-o", "--output", type=str, 
-        default="thesis/visualizations/baseline_model_v2",
+        default=f"thesis/visualizations/{model_folder}",
     )
     args = parser.parse_args()
 
