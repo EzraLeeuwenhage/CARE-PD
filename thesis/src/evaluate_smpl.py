@@ -7,7 +7,28 @@ from pathlib import Path
 class SMPLEvaluator:
     def __init__(self):
         """Evaluator for 6D SMPL pose sequences using Geodesic Distance on SO(3)."""
-        pass
+        # Standard 24 SMPL model joint names ordered by index
+        self.JOINT_NAMES = [
+            'Pelvis', 'L_Hip', 'R_Hip', 'Spine1', 'L_Knee', 'R_Knee',
+            'Spine2', 'L_Ankle', 'R_Ankle', 'Spine3', 'L_Foot', 'R_Foot',
+            'Neck', 'L_Collar', 'R_Collar', 'Head', 'L_Shoulder', 'R_Shoulder',
+            'L_Elbow', 'R_Elbow', 'L_Wrist', 'R_Wrist', 'L_Hand', 'R_Hand'
+        ]
+        
+        # Self-defined categories for analysis
+        self.JOINT_GROUPS = {
+            'Overall': list(range(24)),
+            'Lower Body': [0, 1, 2, 4, 5, 7, 8, 10, 11],
+            'Upper Body': [3, 6, 9, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+            'Hips': [1, 2],
+            'Knees': [4, 5],
+            'Ankles & Feet': [7, 8, 10, 11],
+            'Shoulders & Collars': [13, 14, 16, 17],
+            'Left Body': [1, 4, 7, 10, 13, 16, 18, 20, 22],
+            'Right Body': [2, 5, 8, 11, 14, 17, 19, 21, 23]
+        }
+
+        self.HARD_JOINTS = [0, 1, 2, 3, 4, 5, 7, 8, 16, 17, 18, 19]
 
     def _convert_6d_to_rmat(self, pose_6d_tensor):
         """Gram-Schmidt to convert 6d pose tensors to (T, 3, 3) rotation matrices.
@@ -37,11 +58,14 @@ class SMPLEvaluator:
         return rot_mats
 
     @torch.no_grad()
-    def compute_mpjae(self, gt_6d, gen_6d):
+    def compute_mpjae(self, gt_6d, gen_6d, return_per_joint=False):
         """Computes the Mean Per Joint Angular Error (MPJAE) using Geodesic Distance.
 
-        Safely handles arbitrary leading dimensions (e.g., T, J, 6 or B, T, J, 6).
-        Returns error in radians.
+        Args:
+            gt_6d: Ground truth tensor (..., J, 6)
+            gen_6d: Generated tensor (..., J, 6)
+            return_per_joint: If True, returns array of shape (24,) with error per joint.
+                              If False, returns overall scalar float (radians).
         """
         R_gt = self._convert_6d_to_rmat(gt_6d)   
         R_gen = self._convert_6d_to_rmat(gen_6d) 
@@ -70,12 +94,19 @@ class SMPLEvaluator:
 
         # Compute geodesic distance and mean over all frames/joints/batches
         d_geo = torch.acos(cos_theta)
-        mpjae = torch.mean(d_geo).item()
         
-        return mpjae
+        if not return_per_joint:
+            # Compute mean error over 12 hardest joints to learn
+            return torch.mean(d_geo[..., self.HARD_JOINTS]).item()
+            
+        # Collapse all leading dimensions EXCEPT the last joint dimension (dim=-1)
+        dims_to_collapse = tuple(range(d_geo.dim() - 1))
+        per_joint_mpjae = torch.mean(d_geo, dim=dims_to_collapse) # Shape: (24,)
+        
+        return per_joint_mpjae.cpu().numpy()
 
     def evaluate_and_cache(self, gt_npz_path, gen_npz_path, labels_path, cache_output_path, verbose=True):
-        """Loads unified GT/Gen 6D datasets, computes MPJAE per severity class, caches result."""
+        """Loads unified GT/Gen 6D datasets, computes MPJAE for all categories/joints, caches result."""
         with open(labels_path, 'r') as f:
             labels = json.load(f)["key_to_severity"]
 
@@ -92,46 +123,87 @@ class SMPLEvaluator:
                 print("Error: No matching pose sequences found between GT and Gen datasets.")
             return None
 
-        results = defaultdict(list)
+        # structure: results[severity_class][metric_name] = [list of sequence errors]
+        results = defaultdict(lambda: defaultdict(list))
         
         for k in common_keys:
-            mpjae = self.compute_mpjae(gt_data[k], gen_data[k])
-            results["Overall"].append(mpjae)
+            per_joint_err = self.compute_mpjae(gt_data[k], gen_data[k], return_per_joint=True) # (24,)
+            sev = labels.get(k, "Unknown")
             
-            # Map sequence key to clinical severity
-            if k in labels:
-                sev = labels[k]
-                results[f"Class {sev}"].append(mpjae)
+            # broad category errors
+            for group_name, joint_indices in self.JOINT_GROUPS.items():
+                group_val = float(np.mean(per_joint_err[joint_indices]))
+                results["Overall"][group_name].append(group_val)
+                if sev != "Unknown":
+                    results[f"Class {sev}"][group_name].append(group_val)
+
+            # individual joint errors
+            for idx, joint_name in enumerate(self.JOINT_NAMES):
+                joint_val = float(per_joint_err[idx])
+                results["Overall"][joint_name].append(joint_val)
+                if sev != "Unknown":
+                    results[f"Class {sev}"][joint_name].append(joint_val)
 
         if verbose:
             print(f"\n--- SMPL SO(3) Evaluation ---")
             print(f"Evaluated {len(common_keys)} matching sequences.")
+            print("\nOverall Category Means (radians):")
+            for group_name in self.JOINT_GROUPS.keys():
+                mean_val = np.mean(results["Overall"][group_name])
+                print(f"  -> {group_name:<20}: {mean_val:.6f} rad")
         
+        # Build summary means dictionary
         summary_results = {}
-        
-        # Display sorted results and build summary dictionary
-        for cls in ["Overall"] + sorted([c for c in results.keys() if c != "Overall"]):
-            mean_mpjae = float(np.mean(results[cls]))
-            summary_results[cls] = mean_mpjae
-            
-            if verbose:
-                count = len(results[cls])
-                print(f"  -> {cls} (N={count}): {mean_mpjae:.6f} rad")
+        for cls_key, metrics_dict in results.items():
+            summary_results[cls_key] = {
+                metric_name: float(np.mean(vals))
+                for metric_name, vals in metrics_dict.items()
+            }
                 
-        # Cache results to disk
+        # Store results
         out_path = Path(cache_output_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Save both the final means and the raw distributions (for future plotting)
         cache_data = {
             "summary_means": summary_results,
-            "raw_distributions": {k: [float(x) for x in v] for k, v in results.items()}
+            "raw_distributions": {
+                cls_key: {m: [float(x) for x in vals] for m, vals in metrics_dict.items()}
+                for cls_key, metrics_dict in results.items()
+            }
         }
         
         with open(out_path, 'w') as f:
             json.dump(cache_data, f, indent=4)
             
         if verbose:
-            print(f"Saved MPJAE evaluation results to: {out_path}")
+            print(f"\nSaved detailed MPJAE evaluation results to: {out_path}")
             
         return summary_results
+
+
+if __name__ == "__main__":
+    evaluator = SMPLEvaluator()
+    base_dir = Path("thesis/data/processed/baseline_model_v2")
+    
+    gt_path = base_dir / "6D_SMPL" / "ground_truth_6d.npz"
+    gen_path = base_dir / "6D_SMPL" / "generated_6d.npz"
+    labels_path = base_dir / "h36m" / "gen_labels.json"
+    output_path = base_dir / "evaluation" / "smpl_mpjae_evaluation.json"
+
+    print(f"--- Running SMPL SO(3) Evaluation ---")
+    print(f"GT Data path:  {gt_path}")
+    print(f"Gen Data path: {gen_path}")
+    print(f"Labels path:   {labels_path}")
+    print(f"Output path:   {output_path}")
+
+    smpl_summary = evaluator.evaluate_and_cache(
+        gt_npz_path=str(gt_path),
+        gen_npz_path=str(gen_path),
+        labels_path=str(labels_path),
+        cache_output_path=str(output_path),
+        verbose=True
+    )
+
+    print("\nSMPL SO(3) Evaluation Complete!")
+    for severity, metrics in smpl_summary.items():
+        print(f"  -> {severity:<10}: Overall MPJAE = {metrics['Overall']:.6f} rad")
