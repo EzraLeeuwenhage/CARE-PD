@@ -52,8 +52,19 @@ class SMPL6DDataset(Dataset):
             
         if not all_keys:
             raise ValueError(f"No keys found for prefix: {patient_prefix}")
-            
-        all_keys.sort()
+
+        # Do stratified split on severity class
+        with open(self.cfg['data']['severity_labels_path'], "r") as f:
+            metadata = json.load(f)
+            self.key_to_severity = metadata["key_to_severity"]
+
+        self.valid_keys = self._get_stratified_keys(
+            all_keys=all_keys, 
+            mode=mode, 
+            eval_split=eval_split, 
+            test_split=test_split
+        )
+        print(f"[{mode.upper()} SET] Initialized with {len(self.valid_keys)} stratified sequences total.")
 
         # use sliding windows to build index map
         self.window_indices = []
@@ -61,20 +72,6 @@ class SMPL6DDataset(Dataset):
         
         # track statistics on filtered out chunks
         total_chunks_inspected = 0
-        
-        # Perform the split
-        num_keys = len(all_keys)
-        num_test = int(num_keys * test_split)
-        num_eval = int(num_keys * eval_split)
-        
-        if mode == 'test':
-            self.valid_keys = all_keys[-num_test:]
-        elif mode == 'eval':
-            self.valid_keys = all_keys[-(num_test + num_eval):-num_test]
-        else:
-            self.valid_keys = all_keys[:-(num_test + num_eval)]
-            
-        print(f"[{mode.upper()} SET] Initializing with {len(self.valid_keys)} unique sequences.")
 
         self.window_indices = []
         for key in self.valid_keys:
@@ -106,18 +103,38 @@ class SMPL6DDataset(Dataset):
             
         print(f"[{mode.upper()} SET] Built {len(self.window_indices)} valid sequence chunks.")
 
-    def get_sample_metadata(self, idx):
-        """Returns the source sequence key and frame offset for evaluation tracking."""
-        key, start_idx = self.window_indices[idx]
-        end_idx = start_idx + self.window_size
-        start_z = self.trans_data[key][start_idx, 2]
-        end_z = self.trans_data[key][end_idx - 1, 2]
-        return {
-            "sequence_key": key,
-            "start_frame": start_idx,
-            "end_frame": end_idx,
-            "z_travel_meters": abs(end_z - start_z)
-        }
+    def _get_stratified_keys(self, all_keys, mode, eval_split, test_split):
+        """Deterministically splits sequence keys by clinical severity class."""
+        from collections import defaultdict
+        class_groups = defaultdict(list)
+        
+        for k in all_keys:
+            base_k = k.split('_down')[0] if '_down' in k else k
+            sev = self.key_to_severity.get(base_k, 0)
+            class_groups[sev].append(k)
+
+        stratified_keys = []
+        for sev, keys_in_class in sorted(class_groups.items()):
+            keys_in_class.sort()
+            
+            n_cls = len(keys_in_class)
+            n_test = int(n_cls * test_split)
+            n_eval = int(n_cls * eval_split)
+         
+            train_end = n_cls - n_eval - n_test
+            eval_end = n_cls - n_test
+            
+            if mode == 'train':
+                selected = keys_in_class[:train_end]
+            elif mode == 'eval':
+                selected = keys_in_class[train_end:eval_end]
+            elif mode == 'test':
+                selected = keys_in_class[eval_end:]
+                
+            stratified_keys.extend(selected)
+            print(f"  -> Class {sev}: Added {len(selected)}/{n_cls} sequences to {mode.upper()} set.")
+            
+        return stratified_keys
 
     def __len__(self):
         return len(self.window_indices)
