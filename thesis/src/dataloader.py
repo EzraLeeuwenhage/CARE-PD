@@ -169,7 +169,7 @@ class SMPL6DDataset(Dataset):
 
     def _print_split_summary(self, mode, seq_stats, chunk_counts, total_inspected, discarded_keys, discarded_no_travel):
         """Prints a clean, organized table of sequence and chunk counts per class."""
-        print(f"{mode.upper()} SET")
+        print(f"\n{mode.upper()} SET")
         print(f" {'Severity':<10} | {'Sequences (Split / Total)':<26} | {'Valid Chunks':<12}")
         print("-" * 65)
         
