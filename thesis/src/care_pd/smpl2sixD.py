@@ -15,7 +15,7 @@ from scipy.spatial.transform import Rotation as R
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from thesis.care_pd.conversion_utils import (
+from thesis.src.care_pd.conversion_utils import (
     _DEVICE,
     generate_smpl_in_world,
     transform_seq_so_it_has_no_slope_h36m,

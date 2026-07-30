@@ -26,7 +26,7 @@ from types import SimpleNamespace
 import argparse
 import sys
 
-from thesis.care_pd.conversion_utils import (
+from thesis.src.care_pd.conversion_utils import (
     _DEVICE,
     generate_smpl_in_world,
 )

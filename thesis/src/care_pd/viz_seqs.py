@@ -7,7 +7,7 @@ import argparse
 import pickle
 import json
 from pathlib import Path
-from thesis.care_pd.visualize_skel_walk_func import (
+from thesis.src.care_pd.visualize_skel_walk_func import (
     visualize_sequence, 
     h36m_joint_paths, 
     SMPL_joint_paths, 
