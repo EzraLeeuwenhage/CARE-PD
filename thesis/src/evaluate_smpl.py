@@ -22,8 +22,8 @@ class SMPLEvaluator:
             'Upper Body': [3, 6, 9, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
             'Hips': [1, 2],
             'Knees': [4, 5],
-            'Ankles & Feet': [7, 8, 10, 11],
-            'Shoulders & Collars': [13, 14, 16, 17],
+            'Ankles': [7, 8],
+            'Shoulders': [16, 17],
             'Left Body': [1, 4, 7, 10, 13, 16, 18, 20, 22],
             'Right Body': [2, 5, 8, 11, 14, 17, 19, 21, 23]
         }

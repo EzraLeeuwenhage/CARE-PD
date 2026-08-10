@@ -23,7 +23,7 @@ def plot_smpl_mpjae(json_path, output_dir):
     # Define standard categories vs. 24 individual joints
     categories = [
         'Overall', 'Lower Body', 'Upper Body', 'Hips', 
-        'Knees', 'Ankles & Feet', 'Shoulders & Collars', 
+        'Knees', 'Ankles', 'Shoulders', 
         'Left Body', 'Right Body'
     ]
     all_joints = [
