@@ -1,19 +1,20 @@
 import json
-import yaml
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from collections import defaultdict
 
-CONFIG_PATH = "thesis/configs/dataloader.yaml"
+from thesis.src.generate_prior import generate_prior_from_prefix
+
 
 class SMPL6DDataset(Dataset):
-    def __init__(self, config_path=CONFIG_PATH, mode='train'):
+    """Base dataset class for Conditional Flow Matching models.
+    Yields pairs of the form (prefix_dict, target_dict, severity_score).
+    """
+    def __init__(self, cfg, mode='train'):
         super().__init__()
         self.mode = mode
-        
-        with open(config_path, 'r') as f:
-            self.cfg = yaml.safe_load(f)
+        self.cfg = cfg
             
         self.window_size = self.cfg['windowing']['total_window_size']
         self.prefix_length = self.cfg['windowing']['prefix_length']
@@ -116,8 +117,7 @@ class SMPL6DDataset(Dataset):
         seq_stats = {}
         
         for sev, keys_in_class in sorted(class_groups.items()):
-            keys_in_class.sort()  # Ensure deterministic order within class
-            
+            keys_in_class.sort()
             n_cls = len(keys_in_class)
             n_test = max(1, int(n_cls * test_split)) if n_cls >= 1 else 0
             n_eval = max(1, int(n_cls * eval_split)) if n_cls >= 2 else 0
@@ -139,23 +139,19 @@ class SMPL6DDataset(Dataset):
 
     def _filter_valid_sequences(self, all_keys):
         """Pre-filters sequences to only include those that yield at least 1 valid chunk."""
-        valid_seq_keys = []
-        discarded_short = []
-        discarded_no_travel = []
-        
+        valid_seq_keys, discarded_short, discarded_no_travel = [], [], []
         for key in all_keys:
             num_frames = self.pose_data[key].shape[0]
             if num_frames < self.window_size:
                 discarded_short.append(key)
                 continue
             
-            # Fast check: does at least ONE window satisfy min_z_travel?
+            # make sure at least one chunk satisfies min_z_travel
             has_valid_chunk = False
             for start_idx in range(0, num_frames - self.window_size + 1, self.step_size):
                 end_idx = start_idx + self.window_size
                 start_z = self.trans_data[key][start_idx, 2]
                 end_z = self.trans_data[key][end_idx - 1, 2]
-                
                 if abs(end_z - start_z) >= self.min_z_travel:
                     has_valid_chunk = True
                     break
@@ -172,25 +168,17 @@ class SMPL6DDataset(Dataset):
         print(f"\n{mode.upper()} SET")
         print(f" {'Severity':<10} | {'Sequences (Split / Total)':<26} | {'Valid Chunks':<12}")
         print("-" * 65)
-        
-        total_seq_selected = 0
-        total_seq_all = 0
-        total_chunks = 0
-        
+        total_seq_selected = total_seq_all = total_chunks = 0
         for sev in sorted(seq_stats.keys()):
             sel_seq, all_seq = seq_stats[sev]
             chunks = chunk_counts.get(sev, 0)
-            
             total_seq_selected += sel_seq
             total_seq_all += all_seq
             total_chunks += chunks
-            
-            seq_str = f"{sel_seq} / {all_seq}"
-            print(f"  Class {sev:<4} | {seq_str:<26} | {chunks:>10,}")
+            print(f"  Class {sev:<4} | {f'{sel_seq} / {all_seq}':<26} | {chunks:>10,}")
             
         print("-" * 65)
-        total_seq_str = f"{total_seq_selected} / {total_seq_all}"
-        print(f" {'TOTAL':<10} | {total_seq_str:<26} | {total_chunks:>10,}")
+        print(f" {'TOTAL':<10} | {f'{total_seq_selected} / {total_seq_all}':<26} | {total_chunks:>10,}")
         
         filtered_out = total_inspected - total_chunks
         if filtered_out > 0:
@@ -211,114 +199,80 @@ class SMPL6DDataset(Dataset):
         pose_window = torch.tensor(self.pose_data[key][start_idx:end_idx, :24, :], dtype=torch.float32)
         trans_window = torch.tensor(self.trans_data[key][start_idx:end_idx], dtype=torch.float32)
         
-        # split as prefix and target sequence        
-        prefix = {
-            'pose': pose_window[:self.prefix_length],
-            'trans': trans_window[:self.prefix_length]
-        }
-        
-        target = {
-            'pose': pose_window[self.prefix_length:],
-            'trans': trans_window[self.prefix_length:]
-        }
-
-        # extract severity score from registry
+        prefix = {'pose': pose_window[:self.prefix_length], 'trans': trans_window[:self.prefix_length]}
+        target = {'pose': pose_window[self.prefix_length:], 'trans': trans_window[self.prefix_length:]}
         base_key = key.split('_down')[0] if '_down' in key else key
         severity_score = self.key_to_severity[base_key]
-        
-        return prefix, target, torch.tensor(severity_score, dtype=torch.long)
+        severity_tensor = torch.tensor(severity_score, dtype=torch.long)
+        return prefix, target, severity_tensor
 
 
-def get_dataloader(config_path=CONFIG_PATH, mode='train'):
-    dataset = SMPL6DDataset(config_path, mode=mode)
+class JointSMPL6DDataset(SMPL6DDataset):
+    """Dataset for Multimodal Joint Generator Matching models.
     
-    with open(config_path, 'r') as f:
-        cfg = yaml.safe_load(f)
-        
+    Overrides __getitem__ to compute FM time tau, continuous noisy state x_tau, 
+    target velocity u_target, and discrete CTMC noisy label y_tau.
+    TODO: cite Campbell et al. 2024 DFM and/or Holderrieth et al. 2025 GM papers for Jump part.
+    """
+    def __init__(self, cfg, mode='train', num_classes=4):
+        super().__init__(cfg, mode=mode)
+        self.num_classes = num_classes
+
+    def __getitem__(self, idx):
+        prefix, target, y_target = super().__getitem__(idx)
+
+        # Sample FM time tau from uniform distribution [0, 1]
+        tau = torch.rand(1)
+
+        # Continuous Flow part (linear interpolation)
+        # Add temporary batch dimension for prior generation function
+        prefix_b = {k: v.unsqueeze(0) for k, v in prefix.items()}
+        target_b = {k: v.unsqueeze(0) for k, v in target.items()}
+        x_0_b = generate_prior_from_prefix(prefix_b, target_b)
+        x_0 = {k: v.squeeze(0) for k, v in x_0_b.items()}
+
+        t_pose = tau.view(1, 1, 1)
+        t_trans = tau.view(1, 1)
+
+        x_tau = {
+            'pose': (1.0 - t_pose) * x_0['pose'] + t_pose * target['pose'],
+            'trans': (1.0 - t_trans) * x_0['trans'] + t_trans * target['trans']
+        }
+
+        u_target = {
+            'pose': target['pose'] - x_0['pose'],
+            'trans': target['trans'] - x_0['trans']
+        }
+
+        # Discrete CTMC Jump part (jump mixture path)
+        # With probability tau, y_tau = y_target, else draw y_tau from Uni({0, 1, 2, 3})
+        if torch.rand(1).item() < tau.item():
+            y_tau = y_target.clone()
+        else:
+            y_tau = torch.randint(0, self.num_classes, (1,)).squeeze(0)
+
+        return prefix, x_tau, y_tau, u_target, y_target, tau
+
+
+def get_dataloader(cfg, mode='train', is_joint_model_train=False):
+    """Builds appropriate dataloader for conditional or joint models.
+    
+    Args:
+        cfg (dict): configuration dictionary.
+        mode (str): 'train', 'eval', or 'test'.
+        is_joint_model_train (bool): True if training the joint multimodal model.
+    """
+    # For eval and test modes, always use base SMPL6DDataset
+    if is_joint_model_train and mode == 'train':
+        dataset = JointSMPL6DDataset(cfg, mode=mode, num_classes=cfg['model'].get('num_classes', 4))
+    else:
+        dataset = SMPL6DDataset(cfg, mode=mode)
+
     is_train = mode == 'train'
-    
-    loader = DataLoader(
+    return DataLoader(
         dataset,
         batch_size=cfg['training']['batch_size'],
         shuffle=cfg['training']['shuffle'] if is_train else False,
         num_workers=cfg['training']['num_workers'],
         drop_last=is_train
     )
-    return loader
-
-
-if __name__ == "__main__":
-    from tqdm import tqdm
-    from pathlib import Path
-    from collections import Counter
-    import sys
-    import os
-    
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-    from thesis.utils.sixD2smpl import build_smpl_pkl_from_6d_smpl
-    
-    config_path = CONFIG_PATH
-    with open(config_path, 'r') as f:
-        cfg = yaml.safe_load(f)
-        
-    output_dir = Path("thesis/data/processed/ground_truth_chunks")
-    smpl_output_path = output_dir / "SMPL" / "ground_truth.pkl"
-    labels_output_path = output_dir / "h36m" / "gt_labels.json"
-    
-    print(f"--- Generating Ground Truth Chunk Dataset ---")
-    print(f"Config path:   {config_path}")
-    print(f"Output SMPL:   {smpl_output_path}")
-    print(f"Output Labels: {labels_output_path}")
-    
-    dataset = SMPL6DDataset(config_path)
-    
-    # Instantiate a custom DataLoader that guarantees NO shuffling and NO dropped data
-    loader = DataLoader(
-        dataset,
-        batch_size=cfg['training']['batch_size'],
-        shuffle=False,   
-        drop_last=False, 
-        num_workers=cfg['training']['num_workers']
-    )
-    
-    all_gt_pose = []
-    all_gt_trans = []
-    all_severities = []
-    
-    for prefix, target, severity in tqdm(loader, desc="Extracting Chunks"):
-        # Concatenate prefix and target to restore the full continuous chunk
-        gt_pose = torch.cat([prefix['pose'], target['pose']], dim=1)
-        gt_trans = torch.cat([prefix['trans'], target['trans']], dim=1)
-        
-        all_gt_pose.append(gt_pose)
-        all_gt_trans.append(gt_trans)
-        all_severities.extend(severity.tolist())
-        
-    full_pose = torch.cat(all_gt_pose, dim=0)
-    full_trans = torch.cat(all_gt_trans, dim=0)
-    
-    print("\nSaving chunked data to SMPL .pkl format...")
-    smpl_output_path.parent.mkdir(parents=True, exist_ok=True)
-    build_smpl_pkl_from_6d_smpl(
-        generated_pose_6d=full_pose, 
-        generated_trans=full_trans, 
-        output_filepath=str(smpl_output_path), 
-        subject_id="GT", 
-        walk_prefix="gt"
-    )
-    
-    print("Saving severity labels to JSON...")
-    labels_output_path.parent.mkdir(parents=True, exist_ok=True)
-    labels_dict = {"key_to_severity": {}}
-    for i, sev in enumerate(all_severities):
-        labels_dict["key_to_severity"][f"GT__gt_{i:03d}"] = sev
-        
-    with open(labels_output_path, 'w') as f:
-        json.dump(labels_dict, f, indent=4)
-    
-    print("\nGround Truth Chunk Extraction Complete!")
-    print(f"Total 60-frame chunks extracted: {full_pose.shape[0]}")
-    
-    sev_counts = Counter(all_severities)
-    for severity in sorted(sev_counts.keys()):
-        print(f"  -> Class '{severity}': {sev_counts[severity]} chunks processed.")

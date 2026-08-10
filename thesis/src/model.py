@@ -1,9 +1,11 @@
 import math
-import yaml
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
+
+from thesis.src.generate_prior import generate_prior_from_prefix
+from thesis.src.evaluate_smpl import SMPLEvaluator
 
 
 # ====================
@@ -21,9 +23,7 @@ class SinusoidalEmbedding(nn.Module):
         
         # Pre-compute frequencies once during init
         half = dim // 2
-        freqs = torch.exp(
-            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
-        )
+        freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half)
         self.register_buffer("freqs", freqs)
 
     def forward(self, x):
@@ -41,7 +41,7 @@ class SinusoidalEmbedding(nn.Module):
             embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
             
         return embedding
-  
+
 
 class FlowHead(nn.Module):
     """Solves the conditional KFE for the continuous motion state space S_1."""
@@ -62,11 +62,7 @@ class FlowHead(nn.Module):
         pose_size = self.target_frames * self.num_joints * 6
         u_pred_pose = u_pred_flat[:, :pose_size].reshape(batch_size, self.target_frames, self.num_joints, 6)
         u_pred_trans = u_pred_flat[:, pose_size:].reshape(batch_size, self.target_frames, 3)
-        
-        return {
-            'pose': u_pred_pose,
-            'trans': u_pred_trans
-        }
+        return {'pose': u_pred_pose, 'trans': u_pred_trans}
 
 
 class JumpHead(nn.Module):
@@ -76,7 +72,7 @@ class JumpHead(nn.Module):
     """
     def __init__(self, hidden_dim, num_classes):
         super().__init__()
-        # Outputs jump intensities/rates to other categorical classes
+        # Outputs jump rates to other categorical classes
         self.net = nn.Linear(hidden_dim, num_classes)
 
     def forward(self, shared_latent):
@@ -86,7 +82,6 @@ class JumpHead(nn.Module):
 # ====================
 # BACKBONES
 # ====================
-
 def flatten_motion_inputs(x_tau_dict, prefix_dict):
     """Helper function to flatten pose and translation dicts."""
     batch_size = x_tau_dict['pose'].shape[0]
@@ -103,12 +98,13 @@ def flatten_motion_inputs(x_tau_dict, prefix_dict):
 
 
 class ConditionalBaselineBackbone(nn.Module):
-    """Uses MLP for static conditional label + continuous state into shared latent."""
-    def __init__(self, config_path, hidden_dim=1024, class_embed_dim=64, time_embed_dim=64):
+    """Model Backbone for FM conditioned on static severity score.
+    
+    Uses MLP for static conditional label + continuous state into shared latent.
+    """
+    def __init__(self, cfg, hidden_dim=1024, class_embed_dim=64, time_embed_dim=64):
         super().__init__()
-        with open(config_path, 'r') as f:
-            self.cfg = yaml.safe_load(f)
-
+        self.cfg = cfg
         self.target_frames = self.cfg['windowing']['total_window_size'] - self.cfg['windowing']['prefix_length']
         self.prefix_frames = self.cfg['windowing']['prefix_length']
         self.num_joints = self.cfg['data']['num_joints']
@@ -139,15 +135,16 @@ class ConditionalBaselineBackbone(nn.Module):
 
 
 class JointBaselineBackbone(ConditionalBaselineBackbone):
+    """Adapts ConditionalBaselineBackbone to handle discrete categorical labels in addition to continuous motion.
+    
+    Processes noisy continuous motion (x_tau) and noisy discrete label (y_tau) into shared latent.
     """
-    Processes noisy continuous motion (x_tau) and noisy discrete label (y_tau) into shared latent."""
     def forward(self, x_tau_dict, prefix_dict, tau, y_tau):
         # y_tau replaces severity_score, acting as the current state in the jump process.
         x_tau_flat, prefix_flat = flatten_motion_inputs(x_tau_dict, prefix_dict)
         t_emb = self.time_embed(tau)
         y_emb = self.class_embed(y_tau) 
         
-        # Joint state cross-conditioning
         joint_input = torch.cat([x_tau_flat, prefix_flat, y_emb, t_emb], dim=1)
         return self.net(joint_input)
 
@@ -155,74 +152,153 @@ class JointBaselineBackbone(ConditionalBaselineBackbone):
 # ====================
 # MODEL CLASSES
 # ====================
-
 class ConditionalBaselineModel(pl.LightningModule):
     """Baseline conditional generator model for comparison against better backbones and joint models.
 
     Wrapped in PyTorch Lightning for automated training loops and W&B logging.
     """
-    def __init__(self, config_path, hidden_dim=1024, class_embed_dim=64, time_embed_dim=64, lr=1e-4):
+    def __init__(self, cfg):
         super().__init__()
         self.save_hyperparameters()
-        self.lr = lr
+        self.cfg = cfg
+        self.lr = cfg['training']['learning_rate']
+        self.loss_weight = cfg['training'].get('loss_weight', 0.5)
+        self.num_steps = cfg['sampling'].get('num_steps', 100)
         
-        self.backbone = ConditionalBaselineBackbone(config_path, hidden_dim, class_embed_dim, time_embed_dim)
+        hidden_dim = cfg['model'].get('hidden_dim', 1024)
+        class_embed_dim = cfg['model'].get('class_embed_dim', 64)
+        time_embed_dim = cfg['model'].get('time_embed_dim', 64)
+        
+        self.backbone = ConditionalBaselineBackbone(cfg, hidden_dim, class_embed_dim, time_embed_dim)
         self.flow_head = FlowHead(hidden_dim, self.backbone.target_frames, self.backbone.num_joints)
+        self.evaluator = SMPLEvaluator()
 
     def forward(self, x_tau_dict, prefix_dict, tau, severity_score):
         shared_latent = self.backbone(x_tau_dict, prefix_dict, tau, severity_score)
         return self.flow_head(shared_latent)
 
+    def generate_suffix(self, prefix_dict, x_0_dict, severity_score, num_steps=100):
+        """Euler ODE Solver for generating the target suffix (x_1) from the generated prior (x_0). 
+        
+        Starts from the generated prior (x_0) and iteratively applies the model's 
+        predicted velocity field to generate the target suffix (x_1).
+        """
+        batch_size = prefix_dict['pose'].shape[0]
+        x_tau = {'pose': x_0_dict['pose'].clone(), 'trans': x_0_dict['trans'].clone()}
+        dt = 1.0 / num_steps
+        
+        for step in range(num_steps):
+            tau = step * dt
+            tau_tensor = torch.full((batch_size, 1), tau, device=self.device)
+            velocity = self(x_tau, prefix_dict, tau_tensor, severity_score)
+            
+            x_tau['pose'] = x_tau['pose'] + (velocity['pose'] * dt)
+            x_tau['trans'] = x_tau['trans'] + (velocity['trans'] * dt)
+                
+        return x_tau
+
     def training_step(self, batch, batch_idx):
-        prefix_dict, x_t_dict, u_target_dict, severity_score, t = batch
+        prefix_dict, target_dict, severity_score = batch
+        batch_size = severity_score.shape[0]
+
+        # Sample prior (x_0) and FM time (tau)
+        x_0_dict = generate_prior_from_prefix(prefix_dict, target_dict)
+        tau = torch.rand(batch_size, 1, device=self.device)
+
+        # Linear interpolation (x_t)
+        tau_pose = tau.view(batch_size, 1, 1, 1)
+        tau_trans = tau.view(batch_size, 1, 1)
+
+        x_tau_dict = {
+            'pose': (1 - tau_pose) * x_0_dict['pose'] + tau_pose * target_dict['pose'],
+            'trans': (1 - tau_trans) * x_0_dict['trans'] + tau_trans * target_dict['trans']
+        }
+
+        u_true_dict = {
+            'pose': target_dict['pose'] - x_0_dict['pose'],
+            'trans': target_dict['trans'] - x_0_dict['trans']
+        }
+
+        # Predict velocity field and compute loss
+        u_pred_dict = self(x_tau_dict, prefix_dict, tau, severity_score)
+        loss_pose = F.mse_loss(u_pred_dict['pose'], u_true_dict['pose'])
+        loss_trans = F.mse_loss(u_pred_dict['trans'], u_true_dict['trans'])
+        loss_total = ((1.0 - self.loss_weight) * loss_pose) + (self.loss_weight * loss_trans)
         
-        # Predict continuous vector field u_theta
-        u_pred_dict = self(x_t_dict, prefix_dict, t, severity_score)
+        self.log("train/loss_pose", loss_pose)
+        self.log("train/loss_trans", loss_trans)
+        self.log("train/loss_total", loss_total, prog_bar=True)
+        return loss_total
+
+    def validation_step(self, batch, batch_idx):
+        """Automated validation step."""
+        prefix_dict, target_dict, severity_score = batch
+
+        x_0_dict = generate_prior_from_prefix(prefix_dict, target_dict)
+        gen_suffix = self.generate_suffix(prefix_dict, x_0_dict, severity_score, num_steps=self.num_steps)
+
+        gt_pose = torch.cat([prefix_dict['pose'], target_dict['pose']], dim=1).cpu()
+        gen_pose = torch.cat([prefix_dict['pose'], gen_suffix['pose']], dim=1).cpu()
+
+        val_mpjae = self.evaluator.compute_mpjae(gt_pose, gen_pose)
         
-        # Calculate Flow Matching MSE Loss
-        loss_pose = F.mse_loss(u_pred_dict['pose'], u_target_dict['pose'])
-        loss_trans = F.mse_loss(u_pred_dict['trans'], u_target_dict['trans'])
-        loss = loss_pose + loss_trans
-        
-        # W&B Logging
-        self.log("train/loss_total", loss, prog_bar=True)
-        return loss
+        self.log("val/mpjae_rad", val_mpjae, prog_bar=True, sync_dist=True)
+        return val_mpjae
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.lr)
 
 
-class JointBaselineModel(pl.LightningModule):
+class JointBaselineModel(ConditionalBaselineModel):
     """Multimodal joint generator model. 
     
     Approximates the marginal probability path for joint distribution through
     separate conditional probability paths for continuous motion and discrete label approximators.
     """
-    def __init__(self, config_path, num_classes=4, hidden_dim=1024, class_embed_dim=64, time_embed_dim=64, 
-                 lr=1e-4, lambda_motion=1.0, lambda_label=1.0):
-        super().__init__()
-        self.save_hyperparameters()
-        self.lr = lr
-        self.lambda_motion = lambda_motion
-        self.lambda_label = lambda_label
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.lambda_motion = cfg['training'].get('lambda_motion', 1.0)
+        self.lambda_label = cfg['training'].get('lambda_label', 1.0)
         
-        self.backbone = JointBaselineBackbone(config_path, hidden_dim, class_embed_dim, time_embed_dim)
+        hidden_dim = cfg['model'].get('hidden_dim', 1024)
+        class_embed_dim = cfg['model'].get('class_embed_dim', 64)
+        time_embed_dim = cfg['model'].get('time_embed_dim', 64)
+        num_classes = cfg['model'].get('num_classes', 4)
+        
+        self.backbone = JointBaselineBackbone(cfg, hidden_dim, class_embed_dim, time_embed_dim)
         self.flow_head = FlowHead(hidden_dim, self.backbone.target_frames, self.backbone.num_joints)
         self.jump_head = JumpHead(hidden_dim, num_classes=num_classes)
 
     def forward(self, x_tau_dict, prefix_dict, t, y_tau):
         shared_latent = self.backbone(x_tau_dict, prefix_dict, t, y_tau)
         
-        # Factorized conditional generators from shared latent
+        # Factorized conditional generators
         u_theta = self.flow_head(shared_latent)   # continuous vector field
         Q_theta = self.jump_head(shared_latent)   # dsiscrete rate matrix
         
         return u_theta, Q_theta
 
+    def generate_suffix(self, prefix_dict, x_0_dict, severity_score, num_steps=100):
+        """Overrides generate_suffix to unpack (u_theta, Q_theta) during joint inference."""
+        batch_size = prefix_dict['pose'].shape[0]
+        x_tau = {'pose': x_0_dict['pose'].clone(), 'trans': x_0_dict['trans'].clone()}
+        y_tau = severity_score.clone()
+        dt = 1.0 / num_steps
+        
+        for step in range(num_steps):
+            tau = step * dt
+            tau_tensor = torch.full((batch_size, 1), tau, device=self.device)
+            u_theta, Q_theta = self(x_tau, prefix_dict, tau_tensor, y_tau)
+            
+            x_tau['pose'] = x_tau['pose'] + (u_theta['pose'] * dt)
+            x_tau['trans'] = x_tau['trans'] + (u_theta['trans'] * dt)
+                
+        return x_tau
+
     def training_step(self, batch, batch_idx):
         prefix_dict, x_tau_dict, y_tau, u_target_dict, y_target, t = batch
         
-        # Predict u_theta and Q_theta
+        # Predict velocity field and rate matrix
         u_pred_dict, Q_pred = self(x_tau_dict, prefix_dict, t, y_tau)
         
         # Calculate Conditional FM Loss (Motion)
@@ -237,12 +313,7 @@ class JointBaselineModel(pl.LightningModule):
         # Total joint training objective is the linear sum of the individual CGM losses
         loss_total = (self.lambda_motion * loss_motion) + (self.lambda_label * loss_label)
         
-        # W&B logging for tracking individual losses and total loss
         self.log("train/loss_motion", loss_motion)
         self.log("train/loss_label", loss_label)
         self.log("train/loss_total", loss_total, prog_bar=True)
-        
         return loss_total
-
-    def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=self.lr)

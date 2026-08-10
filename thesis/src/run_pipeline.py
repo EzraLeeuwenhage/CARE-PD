@@ -3,18 +3,21 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 
 import json
 import yaml
-import torch
 import numpy as np
 from pathlib import Path
 
-from thesis.src.model import FlowMatchingMLP
+import pytorch_lightning as pl
+from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.callbacks import ModelCheckpoint
+
+from thesis.src.model import ConditionalBaselineModel, JointBaselineModel
 from thesis.src.dataloader import get_dataloader
 from thesis.src.sample import generate_trajectories
 from thesis.utils.sixD2smpl import build_smpl_pkl_from_6d_smpl
 from thesis.src.care_pd.smpl2h36m import convert_smpl_to_h36m
 from thesis.src.evaluate_h36m import H36MEvaluator
 from thesis.src.evaluate_smpl import SMPLEvaluator
-from thesis.src.train import train
+
 
 CONFIG_PATH = "thesis/configs/baseline.yaml"
 
@@ -48,11 +51,10 @@ def format_and_convert(data_dict, cfg):
     print("Formatting and caching raw 6D sequences...")
     for i, sev in enumerate(data_dict["severities"]):
         seq_key = f"seq_{i:03d}"
-        
-        # Write to 6D dictionaries
+
+        # Save 6D SMPL sequences to NPZ files for both ground truth and generated data
         gt_dict[seq_key] = data_dict["gt"]["pose"][i].numpy()
         gt_dict[f"{seq_key}_trans"] = data_dict["gt"]["trans"][i].numpy()
-        
         gen_dict[seq_key] = data_dict["gen"]["pose"][i].numpy()
         gen_dict[f"{seq_key}_trans"] = data_dict["gen"]["trans"][i].numpy()
         
@@ -67,7 +69,6 @@ def format_and_convert(data_dict, cfg):
     np.savez(gt_6d_npz, **gt_dict)
     np.savez(gen_6d_npz, **gen_dict)
     
-    # Convert and save SMPL (.pkl) and H36M (.npz) files
     if gt_h36m.exists() and gt_pkl.exists():
         print("Ground Truth H36M data already exists.")
     else:
@@ -88,14 +89,11 @@ def format_and_convert(data_dict, cfg):
     with open(gen_labels_path, 'w') as f: json.dump(gen_labels, f)
         
     return {
-        "gt_6d": gt_6d_npz,
-        "gen_6d": gen_6d_npz,
-        "gt_h36m": gt_h36m,
-        "gen_h36m": gen_h36m,
-        "gt_labels": gt_labels_path,
-        "gen_labels": gen_labels_path,
-        "out_dir": out_dir
+        "gt_6d": gt_6d_npz, "gen_6d": gen_6d_npz, "gt_h36m": gt_h36m,
+        "gen_h36m": gen_h36m, "gt_labels": gt_labels_path,
+        "gen_labels": gen_labels_path, "out_dir": out_dir
     }
+
 
 def evaluate_pipeline(paths):
     evaluator = H36MEvaluator(fps=30)
@@ -123,29 +121,63 @@ def evaluate_pipeline(paths):
 
 if __name__ == "__main__":
     cfg = load_config()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Initializing Unified Pipeline on: {device.type.upper()}")
+    is_joint_model = cfg['model'].get('is_joint_model', False)
+    model_name = cfg['model'].get('name', 'GenerativeModel')
+    print(f"\nStarting model train-test pipeline for '{model_name}' (Joint Model: {is_joint_model})...")
 
-    model = FlowMatchingMLP(config_path=CONFIG_PATH).to(device)
+    if not is_joint_model:
+        model_class = ConditionalBaselineModel
+        train_loader = get_dataloader(cfg, mode='train', is_joint_model_train=False)
+        eval_loader = get_dataloader(cfg, mode='eval', is_joint_model_train=False)
+        test_loader = get_dataloader(cfg, mode='test', is_joint_model_train=False)
+    else:
+        model_class = JointBaselineModel
+        train_loader = get_dataloader(cfg, mode='train', is_joint_model_train=True)
+        eval_loader = get_dataloader(cfg, mode='eval', is_joint_model_train=False)
+        test_loader = get_dataloader(cfg, mode='test', is_joint_model_train=False)
 
-    # # optional train time optimization
-    # model = torch.compile(model)
+    model = model_class(cfg)
 
-    train_loader = get_dataloader(config_path=CONFIG_PATH, mode='train')
-    eval_loader = get_dataloader(config_path=CONFIG_PATH, mode='eval')
-    test_loader = get_dataloader(config_path=CONFIG_PATH, mode='test')
+    wandb_logger = WandbLogger(
+        project="thesis",
+        name=model_name,
+        config=cfg
+    )
     
+    ckpt_dir = Path(cfg['paths']['output_dir']) / "checkpoints"
+    checkpoint_callback = ModelCheckpoint(
+        monitor="val/mpjae_rad", 
+        mode="min", 
+        save_top_k=1,
+        dirpath=str(ckpt_dir),
+        filename=f"{model_name}-best-{{epoch:02d}}-{{val/mpjae_rad:.4f}}"
+    )
+
+    trainer = pl.Trainer(
+        logger=wandb_logger,
+        callbacks=[checkpoint_callback],
+        max_epochs=cfg['training']['epochs'],
+        precision="16-mixed",
+        accelerator="auto",
+        devices=1,
+        check_val_every_n_epoch=cfg['training'].get('eval_interval', 10),
+        log_every_n_steps=cfg['training'].get('log_interval', 5)
+    )
+
     print("\n--- PHASE 1: TRAINING ---")
-    train(model, train_loader, eval_loader, cfg, device=device)
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=eval_loader)
 
     print("\n--- PHASE 2: DATASET GENERATION ---")
-    model.load_state_dict(torch.load(cfg['paths']['weights'], map_location=device))
+    best_model_path = checkpoint_callback.best_model_path
+
+    print(f"Loading best checkpoint from: {best_model_path}")
+    best_model = model_class.load_from_checkpoint(best_model_path, cfg=cfg)
     
     data_dict = generate_trajectories(
-        model=model, 
+        model=best_model, 
         dataloader=test_loader, 
         num_steps=cfg['sampling']['num_steps'], 
-        device=device,
+        device=trainer.device,
         max_batches=-1,
         desc="Generating Final Test Set"
     )
