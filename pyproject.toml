@@ -28,6 +28,7 @@ dependencies = [
     "gdown>=5.2.1",
     "chumpy>=0.70",
     "google>=3.0.0",
+    "lightning>=2.6.0",
 ]
 
 [tool.uv.extra-build-dependencies]
