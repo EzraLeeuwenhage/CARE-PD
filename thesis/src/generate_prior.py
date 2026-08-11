@@ -2,9 +2,6 @@ import sys
 import subprocess
 import torch
 from pathlib import Path
-from thesis.src.dataloader import get_dataloader
-from thesis.utils.sixD2smpl import build_smpl_pkl_from_6d_smpl
-from thesis.src.care_pd.smpl2h36m import convert_smpl_to_h36m
 
 
 def generate_prior_from_prefix(prefix_dict, target_dict, s_scale=1.0):
@@ -51,6 +48,10 @@ def generate_prior_from_prefix(prefix_dict, target_dict, s_scale=1.0):
 
 
 if __name__ == "__main__":
+    from thesis.src.dataloader import get_dataloader
+    from thesis.utils.sixD2smpl import build_smpl_pkl_from_6d_smpl
+    from thesis.src.care_pd.smpl2h36m import convert_smpl_to_h36m
+
     print("Initializing Dataloader...")
     loader = get_dataloader(config_path="thesis/configs/dataloader.yaml")
     prefix, target, severity = next(iter(loader))

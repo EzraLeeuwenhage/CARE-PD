@@ -161,6 +161,8 @@ def ctmc_jump_step(y_current, Q_pred, dt, num_classes):
         dt (float): Integration step size
         num_classes (int): Total number of discrete categories
     """
+    Q_pred = Q_pred.float()
+    
     # Ensure jump rates to other classes are non-negative
     # and zero out self-transition rate (diagonal of rate matrix Q)
     rates = F.relu(Q_pred)    
@@ -252,9 +254,9 @@ class ConditionalBaselineModel(pl.LightningModule):
         loss_trans = F.mse_loss(u_pred_dict['trans'], u_true_dict['trans'])
         loss_total = ((1.0 - self.loss_weight) * loss_pose) + (self.loss_weight * loss_trans)
         
-        self.log("train/loss_pose", loss_pose)
-        self.log("train/loss_trans", loss_trans)
-        self.log("train/loss_total", loss_total, prog_bar=True)
+        self.log("train/loss_pose", loss_pose, on_step=False, on_epoch=True)
+        self.log("train/loss_trans", loss_trans, on_step=False, on_epoch=True)
+        self.log("train/loss_total", loss_total, on_step=False, on_epoch=True)
         return loss_total
 
     def validation_step(self, batch, batch_idx):
@@ -269,7 +271,7 @@ class ConditionalBaselineModel(pl.LightningModule):
 
         val_mpjae = self.evaluator.compute_mpjae(gt_pose, gen_pose)
         
-        self.log("val/mpjae_rad", val_mpjae, prog_bar=True, sync_dist=True)
+        self.log("val/mpjae_rad", val_mpjae, on_step=False, on_epoch=True, sync_dist=True)
         return val_mpjae
 
     def configure_optimizers(self):
@@ -357,9 +359,9 @@ class JointBaselineModel(ConditionalBaselineModel):
         # Total joint training objective is the linear sum of the individual CGM losses
         loss_total = (self.lambda_motion * loss_motion) + (self.lambda_label * loss_label)
         
-        self.log("train/loss_motion", loss_motion)
-        self.log("train/loss_label", loss_label)
-        self.log("train/loss_total", loss_total, prog_bar=True)
+        self.log("train/loss_motion", loss_motion, on_step=False, on_epoch=True)
+        self.log("train/loss_label", loss_label, on_step=False, on_epoch=True)
+        self.log("train/loss_total", loss_total, on_step=False, on_epoch=True)
         return loss_total
 
     def validation_step(self, batch, batch_idx):
@@ -381,6 +383,6 @@ class JointBaselineModel(ConditionalBaselineModel):
 
         val_mpjae = self.evaluator.compute_mpjae(gt_pose, gen_pose)
         val_label_acc = (gen_severity == severity_score).float().mean()
-        self.log("val/mpjae_rad", val_mpjae, prog_bar=True, sync_dist=True)
-        self.log("val/label_accuracy", val_label_acc, prog_bar=True, sync_dist=True)
+        self.log("val/mpjae_rad", val_mpjae, on_step=False, on_epoch=True, sync_dist=True)
+        self.log("val/label_accuracy", val_label_acc, on_step=False, on_epoch=True, sync_dist=True)
         return val_mpjae, gen_severity

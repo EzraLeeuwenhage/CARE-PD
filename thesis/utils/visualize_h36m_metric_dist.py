@@ -313,7 +313,7 @@ def plot_pd_feature_split_violins(df, distances_df, output_dir):
 
 
 if __name__ == "__main__":
-    model_folder = "baseline_model_v2_epochs1000"
+    model_folder = "JointModel-MLP-Baseline"
     base_dir = f"thesis/data/processed/{model_folder}/evaluation"
 
     parser = argparse.ArgumentParser()

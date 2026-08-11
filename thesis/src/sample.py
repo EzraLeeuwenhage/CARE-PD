@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from tqdm import tqdm
+from tqdm.auto import tqdm
 from pathlib import Path
 
 from thesis.src.generate_prior import generate_prior_from_prefix

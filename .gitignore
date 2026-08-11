@@ -23,6 +23,7 @@ pretext/momask/checkpoints/t2m/text_mot_match/model/finest.tar
 *.zip
 
 __pycache__/
+thesis/data/processed/*
 
 zip_code.py
 J_regressor_h36m_correct.npy

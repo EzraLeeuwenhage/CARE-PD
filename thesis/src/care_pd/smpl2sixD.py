@@ -5,7 +5,7 @@ import torch
 import joblib
 import numpy as np
 from pathlib import Path
-from tqdm import tqdm
+from tqdm.auto import tqdm
 from smplx.lbs import vertices2joints
 from smplx.body_models import SMPL
 from types import SimpleNamespace

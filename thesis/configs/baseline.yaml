@@ -1,6 +1,6 @@
 model:
-  name: "ConditionalModel-MLP-Baseline"
-  is_joint_model: false
+  name: "JointModel-MLP-Baseline"
+  is_joint_model: true
   hidden_dim: 1024
   class_embed_dim: 64
   time_embed_dim: 64
@@ -19,7 +19,7 @@ windowing:
   min_z_travel: 0.5     # Minimum z-axis travel filter (in meters) for a window to be considered valid
 
 training:
-  epochs: 1000
+  epochs: 150
   learning_rate: 0.001
   batch_size: 32
   shuffle: true
@@ -41,4 +41,4 @@ sampling:
 
 paths:
   weights_dir: "thesis/data/checkpoints"
-  output_dir: "thesis/data/processed/baseline_model_v2"
+  output_dir: "thesis/data/processed/{model_name}"

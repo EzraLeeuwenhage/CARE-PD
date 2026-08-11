@@ -6,9 +6,10 @@ import yaml
 import numpy as np
 from pathlib import Path
 
+import torch
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import Callback, ModelCheckpoint
 
 from thesis.src.model import ConditionalBaselineModel, JointBaselineModel
 from thesis.src.dataloader import get_dataloader
@@ -23,7 +24,44 @@ CONFIG_PATH = "thesis/configs/baseline.yaml"
 
 def load_config():
     with open(CONFIG_PATH, 'r') as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+
+    model_name = cfg['model']['name']
+    cfg['paths']['output_dir'] = cfg['paths']['output_dir'].format(model_name=model_name)
+    return cfg
+
+class EpochAndValPrintCallback(Callback):
+    """Custom callback to print train and val metrics at specified epoch intervals."""
+    def __init__(self, train_interval, val_interval):
+        super().__init__()
+        self.train_interval = train_interval
+        self.val_interval = val_interval
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        epoch = trainer.current_epoch + 1
+        if epoch % self.train_interval == 0:
+            loss = trainer.callback_metrics.get("train/loss_total")
+            loss_val = f"{loss.item():.4f}" if loss is not None else "N/A"
+            print(f"Epoch {epoch:04d}/{trainer.max_epochs} | Train Loss: {loss_val}")
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if trainer.sanity_checking:
+            return
+            
+        epoch = trainer.current_epoch + 1
+        if epoch % self.val_interval == 0:
+            mpjae = trainer.callback_metrics.get("val/mpjae_rad")
+            acc = trainer.callback_metrics.get("val/label_accuracy")
+            
+            mpjae_str = f"{mpjae.item():.4f} rad" if mpjae is not None else "N/A"
+            
+            # Format depending on whether it's joint or conditional model
+            if acc is not None:
+                acc_str = f"{acc.item():.4f}"
+                print(f" >>> VALIDATION Epoch {epoch:04d} | MPJAE: {mpjae_str} | Label Acc: {acc_str}")
+            else:
+                print(f" >>> VALIDATION Epoch {epoch:04d} | MPJAE: {mpjae_str}")
+
 
 def format_and_convert(data_dict, cfg, is_joint_model=False):
     out_dir = Path(cfg['paths']['output_dir'])
@@ -142,10 +180,22 @@ if __name__ == "__main__":
 
     model = model_class(cfg)
 
+    out_dir_path = Path(cfg['paths']['output_dir'])
+    out_dir_path.mkdir(parents=True, exist_ok=True)
+
     wandb_logger = WandbLogger(
         project="thesis",
         name=model_name,
+        save_dir=str(out_dir_path),
         config=cfg
+    )
+    
+    eval_interval = cfg['training'].get('eval_interval', 10)
+    log_interval = cfg['training'].get('log_interval', 5)
+
+    print_callback = EpochAndValPrintCallback(
+        train_interval=log_interval, 
+        val_interval=eval_interval
     )
     
     ckpt_dir = Path(cfg['paths']['output_dir']) / "checkpoints"
@@ -154,18 +204,18 @@ if __name__ == "__main__":
         mode="min", 
         save_top_k=1,
         dirpath=str(ckpt_dir),
-        filename=f"{model_name}-best-{{epoch:02d}}-{{val/mpjae_rad:.4f}}"
+        filename=f"best-{{epoch:02d}}-{{val/mpjae_rad:.4f}}"
     )
 
     trainer = pl.Trainer(
         logger=wandb_logger,
-        callbacks=[checkpoint_callback],
+        callbacks=[print_callback, checkpoint_callback],
+        enable_progress_bar=False,
         max_epochs=cfg['training']['epochs'],
         precision="16-mixed",
         accelerator="auto",
         devices=1,
-        check_val_every_n_epoch=cfg['training'].get('eval_interval', 10),
-        log_every_n_steps=cfg['training'].get('log_interval', 5)
+        check_val_every_n_epoch=eval_interval,
     )
 
     print("\n--- PHASE 1: TRAINING ---")
@@ -174,14 +224,16 @@ if __name__ == "__main__":
     print("\n--- PHASE 2: DATASET GENERATION ---")
     best_model_path = checkpoint_callback.best_model_path
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     print(f"Loading best checkpoint from: {best_model_path}")
-    best_model = model_class.load_from_checkpoint(best_model_path, cfg=cfg)
+    best_model = model_class.load_from_checkpoint(best_model_path, cfg=cfg).to(device)
     
     data_dict = generate_trajectories(
         model=best_model, 
         dataloader=test_loader, 
         num_steps=cfg['sampling']['num_steps'], 
-        device=trainer.device,
+        device=device,
         max_batches=-1,
         desc="Generating Final Test Set", 
         is_joint_model=is_joint_model
@@ -208,5 +260,6 @@ if __name__ == "__main__":
 
     print("\n--- PHASE 4: EVALUATION ---")
     evaluate_pipeline(paths)
-    
+
+    wandb_logger.experiment.finish()
     print("\nPipeline Finished Successfully!")
