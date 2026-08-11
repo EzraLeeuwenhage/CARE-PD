@@ -48,8 +48,10 @@ def format_and_convert(data_dict, cfg, is_joint_model=False):
     gt_dict, gen_dict = {}, {}
     gt_labels, gen_labels = {"key_to_severity": {}}, {"key_to_severity": {}}
     
+    gen_severities_list = data_dict["gen_severities"] if is_joint_model else data_dict["severities"]
+
     print("Formatting and caching raw 6D sequences...")
-    for i, sev in enumerate(data_dict["severities"]):
+    for i, gt_sev in enumerate(data_dict["severities"]):
         seq_key = f"seq_{i:03d}"
 
         # Save 6D SMPL sequences to NPZ files for both ground truth and generated data
@@ -58,15 +60,14 @@ def format_and_convert(data_dict, cfg, is_joint_model=False):
         gen_dict[seq_key] = data_dict["gen"]["pose"][i].numpy()
         gen_dict[f"{seq_key}_trans"] = data_dict["gen"]["trans"][i].numpy()
         
-        # Use generated severities if joint model, otherwise fallback to conditional/gt
-        gen_sev = data_dict["gen_severities"][i] if is_joint_model else sev
+        gen_sev = gen_severities_list[i]
         
         # Registry mapping for SMPLEvaluator (Matches 6D Seq keys)
-        gt_labels["key_to_severity"][seq_key] = sev
+        gt_labels["key_to_severity"][seq_key] = gt_sev
         gen_labels["key_to_severity"][seq_key] = gen_sev
         
         # Registry mapping for H36MEvaluator (Matches converted .pkl keys)
-        gt_labels["key_to_severity"][f"GT__gt_{i:03d}"] = sev
+        gt_labels["key_to_severity"][f"GT__gt_{i:03d}"] = gt_sev
         gen_labels["key_to_severity"][f"GEN__gen_{i:03d}"] = gen_sev
 
     np.savez(gt_6d_npz, **gt_dict)
@@ -185,6 +186,22 @@ if __name__ == "__main__":
         desc="Generating Final Test Set", 
         is_joint_model=is_joint_model
     )
+
+    if is_joint_model:
+        print("\n--- PHASE 2.5: CONDITIONAL ADHERENCE (LABEL ACCURACY) ---")
+        gt_sevs = np.array(data_dict["severities"])
+        gen_sevs = np.array(data_dict["gen_severities"])
+        
+        test_label_acc = np.mean(gt_sevs == gen_sevs)
+        correct_matches = np.sum(gt_sevs == gen_sevs)
+        
+        print(f"Final Test Label Accuracy: {test_label_acc:.4f} ({correct_matches}/{len(gt_sevs)} matches)")
+        
+        # Save to evaluation cache for easy plotting/tracking later
+        eval_dir = Path(cfg['paths']['output_dir']) / "evaluation"
+        eval_dir.mkdir(parents=True, exist_ok=True)
+        with open(eval_dir / "test_label_accuracy.json", "w") as f:
+            json.dump({"test_label_accuracy": float(test_label_acc)}, f, indent=4)
     
     print("\n--- PHASE 3: FORMAT CONVERSION ---")
     paths = format_and_convert(data_dict, cfg, is_joint_model=is_joint_model)
