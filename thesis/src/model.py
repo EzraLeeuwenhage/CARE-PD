@@ -152,6 +152,33 @@ class JointBaselineBackbone(ConditionalBaselineBackbone):
 # ====================
 # MODEL CLASSES
 # ====================
+def ctmc_jump_step(y_current, Q_pred, dt, num_classes):
+    """Simulates a CTMC jump step over time interval dt.
+    
+    Args:
+        y_current (Tensor): Current discrete class labels of shape (B,)
+        Q_pred (Tensor): Predicted jump rates of shape (B, K)
+        dt (float): Integration step size
+        num_classes (int): Total number of discrete categories
+    """
+    # Ensure jump rates to other classes are non-negative
+    # and zero out self-transition rate (diagonal of rate matrix Q)
+    rates = F.relu(Q_pred)    
+    mask = F.one_hot(y_current, num_classes=num_classes).bool()
+    rates[mask] = 0.0
+    
+    # Compute transition probabilities for dt: P(i -> j) = dt * Q_ij (for j != i)
+    probs = dt * rates
+    
+    # Compute self-transition probability: P(i -> i) = 1 - sum(P(i -> j) (for j != i)
+    self_prob = (1.0 - probs.sum(dim=-1, keepdim=True)).clamp(min=0.0)
+    probs[mask] = self_prob.squeeze(-1)
+    
+    # Normalize probabilities to avoid float precision errors and sample next state
+    probs = probs / probs.sum(dim=-1, keepdim=True)
+    return torch.multinomial(probs, num_samples=1).squeeze(-1)
+
+
 class ConditionalBaselineModel(pl.LightningModule):
     """Baseline conditional generator model for comparison against better backbones and joint models.
 
@@ -278,22 +305,39 @@ class JointBaselineModel(ConditionalBaselineModel):
         
         return u_theta, Q_theta
 
-    def generate_suffix(self, prefix_dict, x_0_dict, severity_score, num_steps=100):
-        """Overrides generate_suffix to unpack (u_theta, Q_theta) during joint inference."""
+    def generate_suffix(self, prefix_dict, x_0_dict, severity_score=None, num_steps=100):
+        """Iteratively solves continuous Euler ODE for motion x_tau AND discrete 
+        CTMC Jump Process for label y_tau over timesteps tau.
+        """
         batch_size = prefix_dict['pose'].shape[0]
-        x_tau = {'pose': x_0_dict['pose'].clone(), 'trans': x_0_dict['trans'].clone()}
-        y_tau = severity_score.clone()
+        num_classes = self.cfg['model'].get('num_classes', 4)
         dt = 1.0 / num_steps
-        
+        x_tau = {'pose': x_0_dict['pose'].clone(), 'trans': x_0_dict['trans'].clone()}
+
+        # if generating conditioned on severity score, use it, else sample uniformly
+        if severity_score is not None and not self.training:
+            y_tau = severity_score.clone()
+            sample_labels = False
+        else:
+            y_tau = torch.randint(0, num_classes, (batch_size,), device=self.device)
+            sample_labels = True
+
         for step in range(num_steps):
             tau = step * dt
             tau_tensor = torch.full((batch_size, 1), tau, device=self.device)
+            
+            # Predict vector field and rate matrix
             u_theta, Q_theta = self(x_tau, prefix_dict, tau_tensor, y_tau)
             
+            # continuous flow step
             x_tau['pose'] = x_tau['pose'] + (u_theta['pose'] * dt)
             x_tau['trans'] = x_tau['trans'] + (u_theta['trans'] * dt)
-                
-        return x_tau
+            
+            # Discrete CTMC Jump Step
+            if sample_labels:
+                y_tau = ctmc_jump_step(y_tau, Q_theta, dt, num_classes)
+
+        return x_tau, y_tau
 
     def training_step(self, batch, batch_idx):
         prefix_dict, x_tau_dict, y_tau, u_target_dict, y_target, t = batch

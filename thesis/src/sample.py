@@ -25,7 +25,8 @@ def generate_trajectories(model, dataloader, num_steps, device, max_batches=-1, 
     
     all_gt_pose, all_gt_trans = [], []
     all_gen_pose, all_gen_trans = [], []
-    all_severities = []
+    all_gt_severities = []
+    all_gen_severities = []
     
     for i, (prefix, target, severity) in enumerate(tqdm(dataloader, desc=desc, leave=False)):
         if max_batches > 0 and i >= int(max_batches):
@@ -39,19 +40,27 @@ def generate_trajectories(model, dataloader, num_steps, device, max_batches=-1, 
         gt_trans = torch.cat([prefix['trans'], target['trans']], dim=1).cpu()
         all_gt_pose.append(gt_pose)
         all_gt_trans.append(gt_trans)
+        all_gt_severities.extend(severity.cpu().tolist())
         
         x_0 = generate_prior_from_prefix(prefix, target)
-        generated_suffix = model.generate_suffix(prefix, x_0, severity, num_steps=num_steps)
+        output = model.generate_suffix(prefix, x_0, severity_score=severity, num_steps=num_steps)
+
+        # handle conditional vs joint generation outputs
+        if isinstance(output, tuple):
+            generated_suffix, gen_severity = output
+            all_gen_severities.extend(gen_severity.cpu().tolist())
+        else:
+            generated_suffix = output
+            all_gen_severities.extend(severity.cpu().tolist())
         
         gen_pose = torch.cat([prefix['pose'], generated_suffix['pose']], dim=1).cpu()
         gen_trans = torch.cat([prefix['trans'], generated_suffix['trans']], dim=1).cpu()
         all_gen_pose.append(gen_pose)
         all_gen_trans.append(gen_trans)
-        
-        all_severities.extend(severity.cpu().tolist())
 
     return {
         "gt": {"pose": torch.cat(all_gt_pose, dim=0), "trans": torch.cat(all_gt_trans, dim=0)},
         "gen": {"pose": torch.cat(all_gen_pose, dim=0), "trans": torch.cat(all_gen_trans, dim=0)},
-        "severities": all_severities
+        "severities": all_gt_severities,
+        "gen_severities": all_gen_severities
     }
