@@ -19,7 +19,7 @@ def save_generated_to_npz(full_seq_6d, full_seq_trans, output_dir, filename="gen
     print(f"Saved Trans Shape: {trans_np.shape}")
 
 @torch.no_grad()
-def generate_trajectories(model, dataloader, num_steps, device, max_batches=-1, desc="Generating"):
+def generate_trajectories(model, dataloader, num_steps, device, max_batches=-1, desc="Generating", is_joint_model=False):
     """Generates synthetic dataset using model and dataloader."""
     model.eval()
     
@@ -43,18 +43,17 @@ def generate_trajectories(model, dataloader, num_steps, device, max_batches=-1, 
         all_gt_severities.extend(severity.cpu().tolist())
         
         x_0 = generate_prior_from_prefix(prefix, target)
-        output = model.generate_suffix(prefix, x_0, severity_score=severity, num_steps=num_steps)
 
-        # handle conditional vs joint generation outputs
-        if isinstance(output, tuple):
-            generated_suffix, gen_severity = output
+        # handle conditional vs joint generation
+        if is_joint_model:
+            gen_suffix, gen_severity = model.generate_suffix(prefix, x_0, severity_score=None, num_steps=num_steps)
             all_gen_severities.extend(gen_severity.cpu().tolist())
         else:
-            generated_suffix = output
-            all_gen_severities.extend(severity.cpu().tolist())
+            gen_suffix = model.generate_suffix(prefix, x_0, severity_score=severity, num_steps=num_steps)
+            all_gen_severities.extend(severity.cpu().tolist())            
         
-        gen_pose = torch.cat([prefix['pose'], generated_suffix['pose']], dim=1).cpu()
-        gen_trans = torch.cat([prefix['trans'], generated_suffix['trans']], dim=1).cpu()
+        gen_pose = torch.cat([prefix['pose'], gen_suffix['pose']], dim=1).cpu()
+        gen_trans = torch.cat([prefix['trans'], gen_suffix['trans']], dim=1).cpu()
         all_gen_pose.append(gen_pose)
         all_gen_trans.append(gen_trans)
 

@@ -25,7 +25,7 @@ def load_config():
     with open(CONFIG_PATH, 'r') as f:
         return yaml.safe_load(f)
 
-def format_and_convert(data_dict, cfg):
+def format_and_convert(data_dict, cfg, is_joint_model=False):
     out_dir = Path(cfg['paths']['output_dir'])
 
     smpl_dir = out_dir / "SMPL"
@@ -58,13 +58,16 @@ def format_and_convert(data_dict, cfg):
         gen_dict[seq_key] = data_dict["gen"]["pose"][i].numpy()
         gen_dict[f"{seq_key}_trans"] = data_dict["gen"]["trans"][i].numpy()
         
+        # Use generated severities if joint model, otherwise fallback to conditional/gt
+        gen_sev = data_dict["gen_severities"][i] if is_joint_model else sev
+        
         # Registry mapping for SMPLEvaluator (Matches 6D Seq keys)
         gt_labels["key_to_severity"][seq_key] = sev
-        gen_labels["key_to_severity"][seq_key] = sev
+        gen_labels["key_to_severity"][seq_key] = gen_sev
         
         # Registry mapping for H36MEvaluator (Matches converted .pkl keys)
         gt_labels["key_to_severity"][f"GT__gt_{i:03d}"] = sev
-        gen_labels["key_to_severity"][f"GEN__gen_{i:03d}"] = sev
+        gen_labels["key_to_severity"][f"GEN__gen_{i:03d}"] = gen_sev
 
     np.savez(gt_6d_npz, **gt_dict)
     np.savez(gen_6d_npz, **gen_dict)
@@ -179,11 +182,12 @@ if __name__ == "__main__":
         num_steps=cfg['sampling']['num_steps'], 
         device=trainer.device,
         max_batches=-1,
-        desc="Generating Final Test Set"
+        desc="Generating Final Test Set", 
+        is_joint_model=is_joint_model
     )
     
     print("\n--- PHASE 3: FORMAT CONVERSION ---")
-    paths = format_and_convert(data_dict, cfg)
+    paths = format_and_convert(data_dict, cfg, is_joint_model=is_joint_model)
 
     print("\n--- PHASE 4: EVALUATION ---")
     evaluate_pipeline(paths)

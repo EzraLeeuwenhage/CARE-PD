@@ -361,3 +361,26 @@ class JointBaselineModel(ConditionalBaselineModel):
         self.log("train/loss_label", loss_label)
         self.log("train/loss_total", loss_total, prog_bar=True)
         return loss_total
+
+    def validation_step(self, batch, batch_idx):
+        """Automated validation step overridden to handle joint generation tuple outputs."""
+        prefix_dict, target_dict, severity_score = batch
+
+        x_0_dict = generate_prior_from_prefix(prefix_dict, target_dict)
+        
+        # Unconditional generation to validate joint model
+        gen_suffix, gen_severity = self.generate_suffix(
+            prefix_dict, 
+            x_0_dict, 
+            severity_score=None, 
+            num_steps=self.num_steps
+        )
+
+        gt_pose = torch.cat([prefix_dict['pose'], target_dict['pose']], dim=1).cpu()
+        gen_pose = torch.cat([prefix_dict['pose'], gen_suffix['pose']], dim=1).cpu()
+
+        val_mpjae = self.evaluator.compute_mpjae(gt_pose, gen_pose)
+        val_label_acc = (gen_severity == severity_score).float().mean()
+        self.log("val/mpjae_rad", val_mpjae, prog_bar=True, sync_dist=True)
+        self.log("val/label_accuracy", val_label_acc, prog_bar=True, sync_dist=True)
+        return val_mpjae, gen_severity
