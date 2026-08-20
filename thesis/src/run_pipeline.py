@@ -249,7 +249,6 @@ if __name__ == "__main__":
         
         print(f"Final Test Label Accuracy: {test_label_acc:.4f} ({correct_matches}/{len(gt_sevs)} matches)")
         
-        # Save to evaluation cache for easy plotting/tracking later
         eval_dir = Path(cfg['paths']['output_dir']) / "evaluation"
         eval_dir.mkdir(parents=True, exist_ok=True)
         with open(eval_dir / "test_label_accuracy.json", "w") as f:

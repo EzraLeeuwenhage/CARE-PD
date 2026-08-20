@@ -3,6 +3,9 @@ import torch
 import numpy as np
 from collections import defaultdict
 from pathlib import Path
+from scipy.spatial.transform import Rotation
+from scipy.signal import find_peaks
+from sklearn.decomposition import PCA
 
 class SMPLEvaluator:
     def __init__(self):
@@ -105,6 +108,87 @@ class SMPLEvaluator:
         
         return per_joint_mpjae.cpu().numpy()
 
+    def _compute_pairwise_geodesic(self, R1, R2):
+        """Pairwise geodesic distance between two (3, 3) numpy rotation matrices."""
+        R_rel = np.dot(R1, R2.T)
+        trace = np.trace(R_rel)
+        cos_theta = np.clip((trace - 1.0) / 2.0, -1.0 + 1e-7, 1.0 - 1e-7)
+        return np.arccos(cos_theta)
+
+    def extract_and_validate_arm_swing(self, rot_matrices_3x3, prominence=0.05):
+        """
+        Extracts 1D pendular swing via PCA and cross-validates against SO(3) Geodesic Distance.
+        """
+        rotvecs = Rotation.from_matrix(rot_matrices_3x3).as_rotvec()
+        
+        # 1D PCA Pendulum Projection
+        pca = PCA(n_components=1)
+        swing_1d = pca.fit_transform(rotvecs).flatten()
+        
+        peaks, _ = find_peaks(swing_1d, prominence=prominence)
+        valleys, _ = find_peaks(-swing_1d, prominence=prominence)
+        
+        cycle_validations = []
+        amplitudes_pca = []
+        
+        # Cross-validate each peak-valley pair with max geodesic distance
+        for p in peaks:
+            prior_valleys = valleys[valleys < p]
+            if len(prior_valleys) == 0:
+                continue
+            v = prior_valleys[-1]
+            
+            # PCA amplitude (scalar projection)
+            pca_amp = abs(swing_1d[p] - swing_1d[v])
+            amplitudes_pca.append(pca_amp)
+            
+            # Ground-truth SO(3) Geodesic ROM
+            geo_rom = self._compute_pairwise_geodesic(rot_matrices_3x3[p], rot_matrices_3x3[v])
+            
+            # verify that peak and valley are aligned with max geodesic distance frames
+            window_matrices = rot_matrices_3x3[v:p+1]
+            geo_distances_from_v = [self._compute_pairwise_geodesic(rot_matrices_3x3[v], R_t) for R_t in window_matrices]
+            geo_argmax_frame = v + np.argmax(geo_distances_from_v)
+            
+            frame_aligned = (geo_argmax_frame == p)
+            amplitude_error = abs(pca_amp - geo_rom) / geo_rom if geo_rom > 0 else 0.0
+            
+            cycle_validations.append({
+                "valley_frame": int(v),
+                "peak_frame": int(p),
+                "geo_argmax_frame": int(geo_argmax_frame),
+                "frame_aligned": bool(frame_aligned),
+                "pca_amplitude_rad": float(pca_amp),
+                "geo_rom_rad": float(geo_rom),
+                "rel_error": float(amplitude_error)
+            })
+            
+        mean_rom = np.mean(amplitudes_pca) if amplitudes_pca else 0.0
+        return mean_rom, cycle_validations
+
+    def compute_arm_swing_asymmetry(self, seq_6d, prominence=0.05):
+        """
+        Wrapper to compute L/R swing asymmetry directly from a 6D tensor sequence.
+        ROM_L/R are the means of the ROM for each sequence.
+        Asymmetry is the absolute difference between L and R mean ROM.
+
+        Args:
+            seq_6d: numpy array or tensor of shape (T, 24, 6)
+        """
+        R_seq = self._convert_6d_to_rmat(seq_6d).numpy()
+        
+        L_shoulder_idx = self.JOINT_NAMES.index('L_Shoulder')
+        R_shoulder_idx = self.JOINT_NAMES.index('R_Shoulder')
+        
+        rom_L, val_L = self.extract_and_validate_arm_swing(R_seq[:, L_shoulder_idx, :, :], prominence)
+        rom_R, val_R = self.extract_and_validate_arm_swing(R_seq[:, R_shoulder_idx, :, :], prominence)
+        
+        # Calculate Robinson Symmetry Index
+        denominator = rom_L + rom_R + 1e-7
+        si_asymmetry = (2.0 * abs(rom_L - rom_R) / denominator) * 100.0
+
+        return rom_L, rom_R, si_asymmetry, val_L, val_R
+
     def evaluate_and_cache(self, gt_npz_path, gen_npz_path, labels_path, cache_output_path, verbose=True):
         """Loads unified GT/Gen 6D datasets, computes MPJAE for all categories/joints, caches result."""
         with open(labels_path, 'r') as f:
@@ -125,6 +209,10 @@ class SMPLEvaluator:
 
         # structure: results[severity_class][metric_name] = [list of sequence errors]
         results = defaultdict(lambda: defaultdict(list))
+        per_sequence_results = {}
+        misaligned_records = []
+        total_cycles_count = 0
+        misaligned_count = 0
         
         for k in common_keys:
             per_joint_err = self.compute_mpjae(gt_data[k], gen_data[k], return_per_joint=True) # (24,)
@@ -144,6 +232,66 @@ class SMPLEvaluator:
                 if sev != "Unknown":
                     results[f"Class {sev}"][joint_name].append(joint_val)
 
+            rom_L_gt, rom_R_gt, si_asym_gt, val_L_gt, val_R_gt = self.compute_arm_swing_asymmetry(gt_data[k], prominence=0.05)
+            rom_L_gen, rom_R_gen, si_asym_gen, val_L_gen, val_R_gen = self.compute_arm_swing_asymmetry(gen_data[k], prominence=0.05)
+
+            arm_metrics = {
+                "GT_ROM_L": float(rom_L_gt),
+                "GT_ROM_R": float(rom_R_gt),
+                "GT_Symmetry_Index": float(si_asym_gt),
+                "Gen_ROM_L": float(rom_L_gen),
+                "Gen_ROM_R": float(rom_R_gen),
+                "Gen_Symmetry_Index": float(si_asym_gen),
+                "Symmetry_Index_Error": float(abs(si_asym_gt - si_asym_gen))
+            }
+
+            for metric_name, val in arm_metrics.items():
+                results["Overall"][metric_name].append(val)
+                if sev != "Unknown":
+                    results[f"Class {sev}"][metric_name].append(val)
+
+            for split_name, side_name, val_list in [
+                ("GT", "L", val_L_gt),
+                ("GT", "R", val_R_gt),
+                ("Gen", "L", val_L_gen),
+                ("Gen", "R", val_R_gen)
+            ]:
+                for cycle in val_list:
+                    total_cycles_count += 1
+                    if not cycle["frame_aligned"]:
+                        misaligned_count += 1
+                        misaligned_records.append({
+                            "sequence": k,
+                            "split": split_name,
+                            "side": side_name,
+                            "valley_frame": cycle["valley_frame"],
+                            "peak_frame": cycle["peak_frame"],
+                            "geo_argmax_frame": cycle["geo_argmax_frame"],
+                            "rel_error": cycle["rel_error"]
+                        })
+
+            per_sequence_results[k] = {
+                "severity": sev,
+                "overall_mpjae": float(np.mean(per_joint_err[self.HARD_JOINTS])),
+                "per_joint_mpjae": {j_name: float(per_joint_err[i]) for i, j_name in enumerate(self.JOINT_NAMES)},
+                "arm_swing": {
+                    "gt": {
+                        "rom_L": float(rom_L_gt),
+                        "rom_R": float(rom_R_gt),
+                        "symmetry_index": float(si_asym_gt),
+                        "cycles_L": val_L_gt,
+                        "cycles_R": val_R_gt
+                    },
+                    "gen": {
+                        "rom_L": float(rom_L_gen),
+                        "rom_R": float(rom_R_gen),
+                        "symmetry_index": float(si_asym_gen),
+                        "cycles_L": val_L_gen,
+                        "cycles_R": val_R_gen
+                    }
+                }
+            }
+
         if verbose:
             print(f"\n--- SMPL SO(3) Evaluation ---")
             print(f"Evaluated {len(common_keys)} matching sequences.")
@@ -151,6 +299,18 @@ class SMPLEvaluator:
             for group_name in self.JOINT_GROUPS.keys():
                 mean_val = np.mean(results["Overall"][group_name])
                 print(f"  -> {group_name:<20}: {mean_val:.6f} rad")
+
+            print("\nArm Swing & Asymmetry Summary (radians):")
+            print(f"  -> {'GT L_ROM':<20}: {np.mean(results['Overall']['GT_ROM_L']):.4f} rad | {'Gen L_ROM':<20}: {np.mean(results['Overall']['Gen_ROM_L']):.4f} rad")
+            print(f"  -> {'GT R_ROM':<20}: {np.mean(results['Overall']['GT_ROM_R']):.4f} rad | {'Gen R_ROM':<20}: {np.mean(results['Overall']['Gen_ROM_R']):.4f} rad")
+            print(f"  -> {'GT Symmetry Index':<20}: {np.mean(results['Overall']['GT_Symmetry_Index']):.4f} % | {'Gen Symmetry Index':<20}: {np.mean(results['Overall']['Gen_Symmetry_Index']):.4f} %")
+            print(f"  -> {'Symmetry Index Error':<20}: {np.mean(results['Overall']['Symmetry_Index_Error']):.4f} %")
+
+            print(f"\nArm Swing SO(3) Validation Alignment Report:")
+            print(f"  -> Total swing cycles evaluated: {total_cycles_count}")
+            print(f"  -> Misaligned cycles (frame_aligned == False): {misaligned_count} ({(misaligned_count / total_cycles_count * 100) if total_cycles_count > 0 else 0.0:.2f}%)")
+            if misaligned_count > 0:
+                print(f"  -> Logged {len(misaligned_records)} misaligned cycle entries.")
         
         # Build summary means dictionary
         summary_results = {}
@@ -169,6 +329,12 @@ class SMPLEvaluator:
             "raw_distributions": {
                 cls_key: {m: [float(x) for x in vals] for m, vals in metrics_dict.items()}
                 for cls_key, metrics_dict in results.items()
+            },
+            "per_sequence_results": per_sequence_results,
+            "arm_swing_validation": {
+                "total_cycles_evaluated": total_cycles_count,
+                "misaligned_count": misaligned_count,
+                "misaligned_records": misaligned_records
             }
         }
         
@@ -183,12 +349,12 @@ class SMPLEvaluator:
 
 if __name__ == "__main__":
     evaluator = SMPLEvaluator()
-    base_dir = Path("thesis/data/processed/baseline_model_v2")
+    base_dir = Path("thesis/data/processed/ConditionalModel-MLP-Baseline")
     
     gt_path = base_dir / "6D_SMPL" / "ground_truth_6d.npz"
     gen_path = base_dir / "6D_SMPL" / "generated_6d.npz"
     labels_path = base_dir / "h36m" / "gen_labels.json"
-    output_path = base_dir / "evaluation" / "smpl_mpjae_evaluation.json"
+    output_path = base_dir / "evaluation" / "smpl_evaluation.json"
 
     print(f"--- Running SMPL SO(3) Evaluation ---")
     print(f"GT Data path:  {gt_path}")
@@ -206,4 +372,4 @@ if __name__ == "__main__":
 
     print("\nSMPL SO(3) Evaluation Complete!")
     for severity, metrics in smpl_summary.items():
-        print(f"  -> {severity:<10}: Overall MPJAE = {metrics['Overall']:.6f} rad")
+        print(f"  -> {severity:<10}: Overall MPJAE = {metrics['Overall']:.6f} rad | GT Symmetry Index = {metrics['GT_Symmetry_Index']:.4f} % | Gen Symmetry Index = {metrics['Gen_Symmetry_Index']:.4f} %")
