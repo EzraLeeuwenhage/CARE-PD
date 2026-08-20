@@ -28,8 +28,31 @@ def main():
     parser.add_argument('-k', '--key', default=None, type=str, help='Specify a single sequence key to visualize')
     parser.add_argument('-hs', '--heelstrikes', default=None, type=str, help='Path to the heel strikes JSON file')
     parser.add_argument('-l', '--labels', default=None, type=str, help='Path to the severity labels JSON file')
+
+    # auto path arguments
+    parser.add_argument('--auto', type=str, default=None, help='Auto-resolve paths from thesis/data/processed/<AUTO>')
+    parser.add_argument('--gen', action='store_true', help='Use generated files instead of ground truth')
+    parser.add_argument('--use-hs', action='store_true', help='Load heel strikes automatically')
+    parser.add_argument('--use-lbl', action='store_true', help='Load labels automatically')
     
     args = parser.parse_args()
+
+    if args.auto:
+        base_dir = Path("thesis/data/processed") / args.auto
+        prefix = "gen" if args.gen else "gt"
+        npz_name = "generated_3d_world.npz" if args.gen else "ground_truth_3d_world.npz"
+
+        args.npzf = str(base_dir / npz_name)
+        if args.use_hs:
+            args.heelstrikes = str(base_dir / f"{prefix}_heel_strikes.json")
+        if args.use_lbl:
+            args.labels = str(base_dir / f"{prefix}_labels.json")
+
+        print(f"Auto-resolved paths from {base_dir}:")   
+        print(f"NPZ: {args.npzf}")
+        if args.use_hs: print(f"Heel Strikes: {args.heelstrikes}")
+        if args.use_lbl: print(f"Labels: {args.labels}")
+
     print(args)
     
     if args.npzf:
