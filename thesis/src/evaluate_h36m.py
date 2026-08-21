@@ -190,7 +190,7 @@ class H36MEvaluator:
             "floating", "mean_stance_displacement",  
             "mean_step_length", "mean_step_asymmetry",
             "mean_walking_speed", "max_ankle_clearance",
-            "mean_emos", "variance_emos", "mean_jerk"
+            "mean_emos", "variance_emos"
         ]
         
         if len(peaks_info) < 2:
@@ -217,11 +217,6 @@ class H36MEvaluator:
         # ---------------------------------------------------------
         # PD FEATURES
         # ---------------------------------------------------------
-        # Jerk (smoothness of joint motion)
-        velocity = np.diff(seq, axis=0) * self.fps
-        acceleration = np.diff(velocity, axis=0) * self.fps
-        jerk = np.diff(acceleration, axis=0) * self.fps
-        metrics["mean_jerk"] = np.mean(np.linalg.norm(jerk, axis=-1))
 
         # Step Length & Vertical Foot Lifting
         step_lengths = []
@@ -251,9 +246,12 @@ class H36MEvaluator:
         metrics["mean_stance_displacement"] = np.mean(stance_displacements) if stance_displacements else np.nan
         metrics["mean_step_length"] = np.mean(step_lengths) if step_lengths else np.nan
         
-        # Step Asymmetry (absolute difference between alternating consecutive steps, so arythmicity)
+        # Step Asymmetry (using Robinson Symmetry Index on consecutive alternating steps)
         if len(step_lengths) > 1:
-            asymmetries = np.abs(np.diff(step_lengths))
+            sl_arr = np.array(step_lengths)
+            diffs = np.abs(np.diff(sl_arr))
+            sums = sl_arr[:-1] + sl_arr[1:] + 1e-7
+            asymmetries = (2.0 * diffs / sums) * 100.0
             metrics["mean_step_asymmetry"] = np.mean(asymmetries)
         else:
             metrics["mean_step_asymmetry"] = np.nan
@@ -267,7 +265,7 @@ class H36MEvaluator:
         time_elapsed = (last_strike - first_strike) / self.fps
         metrics["mean_walking_speed"] = pelvis_displacement / time_elapsed if time_elapsed > 0 else 0.0
 
-        # Estimated Margin of Stability (eMoS)
+        # Estimated Margin of Stability (eMoS) -> Medio-Lateral stability
         pelvis_x = seq[:, self.PELVIS, 0]
         pelvis_y = np.mean(seq[:, self.PELVIS, 1]) 
         pelvis_v_x = np.gradient(pelvis_x) * self.fps
@@ -287,7 +285,7 @@ class H36MEvaluator:
                 stance_x = seq[end, leading_idx, 0]
                 swing_x = seq[end, trailing_idx, 0]
                 
-                # Direction of instability (from trailing to leading foot)
+                # Direction of instability (from trailing to leading foot) ensures lateral outward measurement
                 direction = np.sign(stance_x - swing_x)
                 
                 # Calculate MoS at the exact frame of heel strike
@@ -312,7 +310,7 @@ class H36MEvaluator:
             "sequence_length", "mean_bone_length_variance", "floating", 
             "mean_stance_displacement", "mean_step_length", "mean_step_asymmetry", 
             "mean_walking_speed", "max_ankle_clearance", 
-            "mean_emos", "variance_emos", "mean_jerk"
+            "mean_emos", "variance_emos"
         ]
 
         distributions = {"overall": {k: [] for k in metric_keys}}
@@ -364,9 +362,12 @@ class H36MEvaluator:
 
 if __name__ == "__main__":
     evaluator = H36MEvaluator(fps=30)
-    data_path = Path("thesis/data/processed/baseline_model/h36m/generated_3d_world.npz")
-    labels_path = Path("thesis/data/processed/baseline_model/h36m/gen_labels.json") 
-    output_path = Path("thesis/data/processed/baseline_model/evaluation/gen_h36m_distributions_new_metrics.pkl")
+    model_folder = "JointModel-MLP-Baseline"
+    base_dir = Path(f"thesis/data/processed/{model_folder}")
+
+    data_path = base_dir / "h36m" / "ground_truth_3d_world.npz"
+    labels_path = base_dir / "h36m" / "gt_labels.json"
+    output_path = base_dir / "evaluation" / "gt_h36m_distributions.pkl"
 
     print(f"Data path:   {data_path}")
     print(f"Labels path: {labels_path}")
@@ -376,10 +377,30 @@ if __name__ == "__main__":
         npz_path=str(data_path),
         labels_path=str(labels_path),
         cache_output_path=str(output_path),
-        synthetic=True
+        synthetic=False
     )
 
     print("\n Ground Truth Extraction Complete!")
     for severity, metrics in ground_truth_distributions.items():
+        count = len(metrics['sequence_length'])
+        print(f"  -> Class '{severity}': {count} valid sequences processed.")
+
+    data_path = base_dir / "h36m" / "generated_3d_world.npz"
+    labels_path = base_dir / "h36m" / "gen_labels.json"
+    output_path = base_dir / "evaluation" / "gen_h36m_distributions.pkl"
+
+    print(f"Data path:   {data_path}")
+    print(f"Labels path: {labels_path}")
+    print(f"Output path: {output_path}")
+
+    generated_distributions = evaluator.evaluate_and_cache(
+        npz_path=str(data_path),
+        labels_path=str(labels_path),
+        cache_output_path=str(output_path),
+        synthetic=True
+    )
+
+    print("\n Generated Data Extraction Complete!")
+    for severity, metrics in generated_distributions.items():
         count = len(metrics['sequence_length'])
         print(f"  -> Class '{severity}': {count} valid sequences processed.")

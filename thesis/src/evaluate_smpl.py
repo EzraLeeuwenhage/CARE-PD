@@ -8,8 +8,9 @@ from scipy.signal import find_peaks
 from sklearn.decomposition import PCA
 
 class SMPLEvaluator:
-    def __init__(self):
+    def __init__(self, fps=30):
         """Evaluator for 6D SMPL pose sequences using Geodesic Distance on SO(3)."""
+        self.fps = fps
         # Standard 24 SMPL model joint names ordered by index
         self.JOINT_NAMES = [
             'Pelvis', 'L_Hip', 'R_Hip', 'Spine1', 'L_Knee', 'R_Knee',
@@ -33,6 +34,9 @@ class SMPLEvaluator:
 
         self.HARD_JOINTS = [0, 1, 2, 3, 4, 5, 7, 8, 16, 17, 18, 19]
 
+    # ---------
+    # MPJAE
+    # ---------
     def _convert_6d_to_rmat(self, pose_6d_tensor):
         """Gram-Schmidt to convert 6d pose tensors to (T, 3, 3) rotation matrices.
         
@@ -108,6 +112,9 @@ class SMPLEvaluator:
         
         return per_joint_mpjae.cpu().numpy()
 
+    # -------------------
+    # Arm Swing Asymmetry
+    # -------------------
     def _compute_pairwise_geodesic(self, R1, R2):
         """Pairwise geodesic distance between two (3, 3) numpy rotation matrices."""
         R_rel = np.dot(R1, R2.T)
@@ -189,7 +196,95 @@ class SMPLEvaluator:
 
         return rom_L, rom_R, si_asymmetry, val_L, val_R
 
-    def evaluate_and_cache(self, gt_npz_path, gen_npz_path, labels_path, cache_output_path, verbose=True):
+    # ---------
+    # SPARC
+    # ---------
+    def _compute_single_sparc(self, a, padlevel=4, fc_max=5.0, amp_th=0.01):
+        """Computes Spectral Arc Length for a single 1D signal. (TODO: cite SPARC paper)"""
+        if len(a) < 2 or np.all(a == 0):
+            return np.nan, None, None, None
+            
+        nfft = int(pow(2, np.ceil(np.log2(len(a))) + padlevel))
+        
+        A = np.abs(np.fft.rfft(a, n=nfft))
+        A_0 = A[0]
+        if A_0 == 0:
+            return 0.0, None, None, None
+            
+        A_norm = A / A_0
+        f = np.fft.rfftfreq(nfft, d=1.0/self.fps)
+        
+        # Adaptive cutoff bounded by fc_max (typically 5Hz for human gait)
+        valid_f_mask = f <= fc_max
+        f_search = f[valid_f_mask]
+        A_search = A_norm[valid_f_mask]
+        
+        # Find minimum frequency omega where A_norm(r) < amp_th for all r > omega
+        above_th_idxs = np.where(A_search >= amp_th)[0]
+        if len(above_th_idxs) > 0:
+            idx_c = above_th_idxs[-1]
+            fc_adj = f_search[idx_c]
+        else:
+            idx_c = 0
+            fc_adj = f_search[0]
+            
+        if fc_adj == 0:
+            return 0.0, f, A_norm, fc_adj
+            
+        f_int = f[:idx_c + 1]
+        A_int = A_norm[:idx_c + 1]
+        
+        # Discrete integral
+        dx = np.diff(f_int) / fc_adj
+        dy = np.diff(A_int)
+        arc_length = -np.sum(np.sqrt(dx**2 + dy**2))
+        
+        return arc_length, f, A_norm, fc_adj
+
+    def compute_sparc_for_sequence(self, seq_6d, plot_joint=None, plot_prefix=""):
+        """Extracts angular velocity magnitude and computes SPARC for all 24 joints."""
+        rot_mats = self._convert_6d_to_rmat(seq_6d).numpy()
+        T, J, _, _ = rot_mats.shape
+        if T < 2:
+            return np.full(J, np.nan)
+            
+        R_t = rot_mats[:-1]
+        R_next = rot_mats[1:]
+        
+        # Transpose each 3x3 matrix in R_t: (T-1, J, 3, 3)
+        R_t_T = np.swapaxes(R_t, -1, -2)
+        R_rel = np.matmul(R_t_T, R_next)
+        
+        R_rel_flat = R_rel.reshape(-1, 3, 3)
+        rotvecs = Rotation.from_matrix(R_rel_flat).as_rotvec()
+        rotvecs = rotvecs.reshape(T-1, J, 3)
+        
+        omega_t = rotvecs * self.fps
+        a_t = np.linalg.norm(omega_t, axis=-1)
+        
+        sparc_vals = np.zeros(J)
+        for j in range(J):
+            arc_len, f, A_norm, fc_adj = self._compute_single_sparc(a_t[:, j])
+            sparc_vals[j] = arc_len
+            
+            if plot_joint and self.JOINT_NAMES[j] == plot_joint and f is not None:
+                import matplotlib.pyplot as plt
+                plt.figure(figsize=(8, 4))
+                plt.plot(f, A_norm, label=f'Normalized Spectrum ({plot_prefix})')
+                plt.axvline(fc_adj, color='r', linestyle='--', label=f'Adaptive Cutoff = {fc_adj:.2f} Hz')
+                plt.title(f'SPARC Frequency Spectrum - {plot_joint} ({plot_prefix})\nSPARC: {arc_len:.4f}')
+                plt.xlabel('Frequency (Hz)')
+                plt.ylabel('Normalized Magnitude')
+                plt.legend()
+                plt.grid(True)
+                plt.tight_layout()
+                plt.savefig(f'sparc_spectrum_{plot_prefix}_{plot_joint}.png')
+                plt.close()
+                print(f"Saved SPARC spectrum plot for {plot_joint} ({plot_prefix})")
+                
+        return sparc_vals
+
+    def evaluate_and_cache(self, gt_npz_path, gen_npz_path, labels_path, cache_output_path, verbose=True, plot_sparc_joint=None):
         """Loads unified GT/Gen 6D datasets, computes MPJAE for all categories/joints, caches result."""
         with open(labels_path, 'r') as f:
             labels = json.load(f)["key_to_severity"]
@@ -213,24 +308,49 @@ class SMPLEvaluator:
         misaligned_records = []
         total_cycles_count = 0
         misaligned_count = 0
+        has_plotted_sparc = False
         
         for k in common_keys:
             per_joint_err = self.compute_mpjae(gt_data[k], gen_data[k], return_per_joint=True) # (24,)
             sev = labels.get(k, "Unknown")
             
-            # broad category errors
+            plot_this_iter = plot_sparc_joint if not has_plotted_sparc else None
+            
+            # SPARC evaluation
+            sparc_gt = self.compute_sparc_for_sequence(gt_data[k], plot_joint=plot_this_iter, plot_prefix="GT")
+            sparc_gen = self.compute_sparc_for_sequence(gen_data[k], plot_joint=plot_this_iter, plot_prefix="Gen")
+            if plot_this_iter:
+                has_plotted_sparc = True
+
+            # broad category errors & SPARC
             for group_name, joint_indices in self.JOINT_GROUPS.items():
                 group_val = float(np.mean(per_joint_err[joint_indices]))
+                sparc_gt_val = float(np.mean(sparc_gt[joint_indices]))
+                sparc_gen_val = float(np.mean(sparc_gen[joint_indices]))
+                
                 results["Overall"][group_name].append(group_val)
+                results["Overall"][f"GT_SPARC_{group_name}"].append(sparc_gt_val)
+                results["Overall"][f"Gen_SPARC_{group_name}"].append(sparc_gen_val)
+                
                 if sev != "Unknown":
                     results[f"Class {sev}"][group_name].append(group_val)
+                    results[f"Class {sev}"][f"GT_SPARC_{group_name}"].append(sparc_gt_val)
+                    results[f"Class {sev}"][f"Gen_SPARC_{group_name}"].append(sparc_gen_val)
 
-            # individual joint errors
+            # individual joint errors & SPARC
             for idx, joint_name in enumerate(self.JOINT_NAMES):
                 joint_val = float(per_joint_err[idx])
+                s_gt_val = float(sparc_gt[idx])
+                s_gen_val = float(sparc_gen[idx])
+                
                 results["Overall"][joint_name].append(joint_val)
+                results["Overall"][f"GT_SPARC_{joint_name}"].append(s_gt_val)
+                results["Overall"][f"Gen_SPARC_{joint_name}"].append(s_gen_val)
+                
                 if sev != "Unknown":
                     results[f"Class {sev}"][joint_name].append(joint_val)
+                    results[f"Class {sev}"][f"GT_SPARC_{joint_name}"].append(s_gt_val)
+                    results[f"Class {sev}"][f"Gen_SPARC_{joint_name}"].append(s_gen_val)
 
             rom_L_gt, rom_R_gt, si_asym_gt, val_L_gt, val_R_gt = self.compute_arm_swing_asymmetry(gt_data[k], prominence=0.05)
             rom_L_gen, rom_R_gen, si_asym_gen, val_L_gen, val_R_gen = self.compute_arm_swing_asymmetry(gen_data[k], prominence=0.05)
@@ -274,6 +394,16 @@ class SMPLEvaluator:
                 "severity": sev,
                 "overall_mpjae": float(np.mean(per_joint_err[self.HARD_JOINTS])),
                 "per_joint_mpjae": {j_name: float(per_joint_err[i]) for i, j_name in enumerate(self.JOINT_NAMES)},
+                "sparc": {
+                    "gt": {
+                        "overall": float(np.mean(sparc_gt)),
+                        "per_joint": {j_name: float(sparc_gt[i]) for i, j_name in enumerate(self.JOINT_NAMES)}
+                    },
+                    "gen": {
+                        "overall": float(np.mean(sparc_gen)),
+                        "per_joint": {j_name: float(sparc_gen[i]) for i, j_name in enumerate(self.JOINT_NAMES)}
+                    }
+                },
                 "arm_swing": {
                     "gt": {
                         "rom_L": float(rom_L_gt),
@@ -299,6 +429,9 @@ class SMPLEvaluator:
             for group_name in self.JOINT_GROUPS.keys():
                 mean_val = np.mean(results["Overall"][group_name])
                 print(f"  -> {group_name:<20}: {mean_val:.6f} rad")
+
+            print("\nSPARC Smoothness Summary:")
+            print(f"  -> {'GT SPARC Overall':<20}: {np.mean(results['Overall']['GT_SPARC_Overall']):.4f} | {'Gen SPARC Overall':<20}: {np.mean(results['Overall']['Gen_SPARC_Overall']):.4f}")
 
             print("\nArm Swing & Asymmetry Summary (radians):")
             print(f"  -> {'GT L_ROM':<20}: {np.mean(results['Overall']['GT_ROM_L']):.4f} rad | {'Gen L_ROM':<20}: {np.mean(results['Overall']['Gen_ROM_L']):.4f} rad")
@@ -348,8 +481,8 @@ class SMPLEvaluator:
 
 
 if __name__ == "__main__":
-    evaluator = SMPLEvaluator()
-    base_dir = Path("thesis/data/processed/ConditionalModel-MLP-Baseline")
+    evaluator = SMPLEvaluator(fps=30)
+    base_dir = Path("thesis/data/processed/JointModel-MLP-Baseline")
     
     gt_path = base_dir / "6D_SMPL" / "ground_truth_6d.npz"
     gen_path = base_dir / "6D_SMPL" / "generated_6d.npz"
@@ -367,9 +500,11 @@ if __name__ == "__main__":
         gen_npz_path=str(gen_path),
         labels_path=str(labels_path),
         cache_output_path=str(output_path),
-        verbose=True
+        verbose=True,
+        plot_sparc_joint='R_Shoulder'
     )
 
     print("\nSMPL SO(3) Evaluation Complete!")
     for severity, metrics in smpl_summary.items():
-        print(f"  -> {severity:<10}: Overall MPJAE = {metrics['Overall']:.6f} rad | GT Symmetry Index = {metrics['GT_Symmetry_Index']:.4f} % | Gen Symmetry Index = {metrics['Gen_Symmetry_Index']:.4f} %")
+        print(f"  -> {severity:<10}: Overall MPJAE = {metrics['Overall']:.6f} rad | \
+              GT SPARC = {metrics['GT_SPARC_Overall']:.4f} | Gen SPARC = {metrics['Gen_SPARC_Overall']:.4f}")

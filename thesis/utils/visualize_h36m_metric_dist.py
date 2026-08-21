@@ -34,42 +34,73 @@ def prepare_dataframe(data):
     return pd.DataFrame(records)
 
 # ---------------------------------------------------------
-# PHYSICAL REALISM
+# DATASET SUMMARY & PHYSICAL REALISM
 # ---------------------------------------------------------
-def plot_physical_realism_grouped(df, output_dir, prefix="", dataset_label=""):
-    """Creates grouped violin plots comparing Overall and Per-Class distributions."""
+def plot_dataset_summary_stats(df, output_dir, prefix="", dataset_label=""):
+    """Generates a single overview plot containing dataset counts and physical realism stats."""
+    overall_df = df[df["Class_ID"] == "overall"]
+    class_df = df[df["Class_ID"] != "overall"]
+    
+    total_seqs = len(overall_df)
+    if total_seqs == 0:
+        print("No data found to plot summary.")
+        return
+
+    mean_len = overall_df["sequence_length"].mean()
+    std_len = overall_df["sequence_length"].std()
+    median_len = overall_df["sequence_length"].median()
+    
+    mean_floating = overall_df["floating"].mean()
+    mean_foot_disp = overall_df["mean_stance_displacement"].mean()
+    mean_bone_var = overall_df["mean_bone_length_variance"].mean()
+    bone_constancy = mean_bone_var < 1e-4
+
     sns.set_theme(style="whitegrid")
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     
-    # Get correct ordering for x-axis
-    order = df["Class_Label"].unique()
-    title_suffix = f" ({dataset_label})" if dataset_label else ""
+    title_suffix = f" - {dataset_label}" if dataset_label else ""
+    fig.suptitle(f"Dataset Overview & Physical Realism{title_suffix}", fontsize=16, fontweight='bold')
 
-    # Floating & Stance Anchoring
-    fig, axes = plt.subplots(1, 2, figsize=(18, 5))
+    # Left Panel: Bar chart of sequence counts
+    classes = sorted(class_df["Class_ID"].unique())
+    if len(classes) > 0:
+        sns.countplot(data=class_df, x="Class_ID", order=classes, ax=axes[0], palette="muted")
+        axes[0].set_title("Sequences per Severity Class", fontsize=13, fontweight='bold')
+        axes[0].set_xlabel("Severity Class", fontsize=11)
+        axes[0].set_ylabel("Count", fontsize=11)
+        for p in axes[0].patches:
+            axes[0].annotate(f'{int(p.get_height())}', 
+                             (p.get_x() + p.get_width() / 2., p.get_height()), 
+                             ha='center', va='bottom', fontsize=11, fontweight='bold')
+    else:
+        axes[0].text(0.5, 0.5, "No Class Data", ha='center', va='center')
+        axes[0].axis('off')
+
+    # Right Panel: Text / Table for global stats
+    axes[1].axis('off')
     
-    sns.violinplot(data=df, x="Class_Label", y="floating", ax=axes[0], color="mediumaquamarine", inner="quartile", order=order)
-    axes[0].set_title(f"Floating (Lowest Foot Y-Coord at Strike){title_suffix}", fontsize=12, fontweight='bold')
-    axes[0].set_ylabel("Vertical Position (meters)")
-    axes[0].set_xlabel("")
-
-    sns.violinplot(data=df, x="Class_Label", y="mean_stance_displacement", ax=axes[1], color="turquoise", inner="quartile", order=order)
-    axes[1].set_title(f"Stance Anchoring (Mean Displacement){title_suffix}", fontsize=12, fontweight='bold')
-    axes[1].set_ylabel("Displacement (m)")
-    axes[1].set_xlabel("")
-
-    plt.tight_layout()
-    plt.savefig(output_dir / f"{prefix}01b_phys_environment.png", dpi=300)
+    stats_text = (
+        f"Global Dataset Statistics (N = {total_seqs})\n"
+        f"──────────────────────────────────────────────────\n"
+        f"Sequence Length (Mean ± Std): {mean_len:.1f} ± {std_len:.1f} frames\n"
+        f"Sequence Length (Median):     {median_len:.1f} frames\n\n"
+        f"Physical Realism Metrics\n"
+        f"──────────────────────────────────────────────────\n"
+        f"Overall Mean Floating:        {mean_floating:.4f} m\n"
+        f"Overall Mean Foot Displace.:  {mean_foot_disp:.4f} m\n"
+        f"Overall Mean Bone Variance:   {mean_bone_var:.2e} m²\n"
+        f"Bone Constancy Achieved:      {'Yes' if bone_constancy else 'No'} (< 1e-4 m²)\n"
+    )
+    
+    # Add a bounding box for the text to make it look like a nice card
+    axes[1].text(0.05, 0.5, stats_text, fontsize=13, va='center', ha='left', 
+                 family='monospace', bbox=dict(facecolor='whitesmoke', alpha=0.8, edgecolor='silver', boxstyle='round,pad=1'))
+    
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    out_filename = output_dir / f"{prefix}00_dataset_summary.png"
+    plt.savefig(out_filename, dpi=300)
     plt.close()
-
-    # Structural Constancy
-    plt.figure(figsize=(10, 5))
-    sns.violinplot(data=df, x="Class_Label", y="mean_bone_length_variance", color="plum", inner="quartile", order=order)
-    plt.title(f"Structural Constancy (Mean Bone Length Variance){title_suffix}", fontsize=14, pad=10, fontweight='bold')
-    plt.ylabel("Variance (m²)")
-    plt.xlabel("")
-    plt.tight_layout()
-    plt.savefig(output_dir / f"{prefix}01c_phys_bones.png", dpi=300)
-    plt.close()
+    print(f"Saved dataset summary plot to: {out_filename}")
 
 # ---------------------------------------------------------
 # PD FEATURES
@@ -81,15 +112,13 @@ def plot_pd_feature_violins(df, output_dir, prefix="", dataset_label=""):
     """
     features = [
         {"key": "mean_step_length", "title": "Mean Step Length", "ylabel": "Length (m)"},
-        {"key": "mean_step_asymmetry", "title": "Mean Step Asymmetry", "ylabel": "Difference (m)"},
         {"key": "mean_walking_speed", "title": "Walking Speed", "ylabel": "Speed (m/s)"},
         {"key": "max_ankle_clearance", "title": "Max Ankle Clearance", "ylabel": "Clearance (m)"},
-        {"key": "mean_emos", "title": "Estimated Margin of Stability (eMoS)", "ylabel": "eMoS (m)"},
-        {"key": "mean_jerk", "title": "Mean Joint Jerk (Smoothness)", "ylabel": "Jerk (m/s³)"}
+        {"key": "mean_emos", "title": "Mean Margin of Stability (eMoS)", "ylabel": "eMoS (m)"}
     ]
 
-    grid_shape = (2, 3)
-    fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=(5.5 * grid_shape[1], 5 * grid_shape[0]))
+    grid_shape = (2, 2)
+    fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=(11, 10))
     axes_flat = axes.flatten()
 
     labels = df["Class_Label"].unique() 
@@ -100,16 +129,15 @@ def plot_pd_feature_violins(df, output_dir, prefix="", dataset_label=""):
         key = feat_info["key"]
         
         if key in ["mean_emos"]:
-            # Use box plot for eMoS features
+            # Use box plot for eMoS features, hiding extreme outliers to prevent y-axis squashing
             sns.boxplot(
                 data=df, 
                 x="Class_Label", 
                 y=key, 
                 ax=ax, 
                 order=labels,
-                hue="Class_Label", 
                 palette="muted", 
-                legend=False,
+                showfliers=False,
                 width=0.5
             )
         else:
@@ -120,9 +148,7 @@ def plot_pd_feature_violins(df, output_dir, prefix="", dataset_label=""):
                 y=key, 
                 ax=ax, 
                 order=labels,
-                hue="Class_Label", 
                 palette="muted", 
-                legend=False, 
                 inner="quartile"
             )
 
@@ -137,78 +163,12 @@ def plot_pd_feature_violins(df, output_dir, prefix="", dataset_label=""):
     plt.close()
 
 # ---------------------------------------------------------
-# SEQUENCE LENGTH DISTRIBUTION
-# ---------------------------------------------------------
-def plot_sequence_length_distribution(df, output_dir, prefix="", dataset_label=""):
-    df_clean = df.dropna(subset=["sequence_length"])
-    
-    if df_clean.empty:
-        print("No sequence length data found to plot.")
-        return
-
-    title_suffix = f" - {dataset_label}" if dataset_label else ""
-
-    # overall distribution
-    overall_df = df_clean[df_clean["Class_ID"] == "overall"]
-    
-    plt.figure(figsize=(8, 5))
-    sns.histplot(data=overall_df, x="sequence_length", bins=20, kde=True, color="cornflowerblue", edgecolor="black")
-    
-    mean_len = overall_df["sequence_length"].mean()
-    median_len = overall_df["sequence_length"].median()
-    N = len(overall_df)
-    
-    plt.title(f"Overall Sequence Lengths{title_suffix} (N={N})", fontsize=14, fontweight='bold', pad=10)
-    plt.xlabel("Sequence Length (Frames)", fontsize=12)
-    plt.ylabel("Frequency", fontsize=12)
-    plt.axvline(mean_len, color='red', linestyle='dashed', linewidth=2, label=f'Mean: {mean_len:.1f}')
-    plt.axvline(median_len, color='green', linestyle='dotted', linewidth=2, label=f'Median: {median_len:.1f}')
-    plt.legend()
-    plt.grid(axis='y', linestyle='--', alpha=0.7)
-    plt.tight_layout()
-    plt.savefig(output_dir / f"{prefix}00a_sequence_length_overall.png", dpi=300)
-    plt.close()
-
-    # separate distributions per class
-    class_df = df_clean[df_clean["Class_ID"] != "overall"]
-    classes = sorted(class_df["Class_ID"].unique())
-    
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    axes_flat = axes.flatten()
-    
-    colors = sns.color_palette("muted", n_colors=len(classes))
-
-    for idx, cls in enumerate(classes):
-        ax = axes_flat[idx]
-        subset = class_df[class_df["Class_ID"] == cls]
-        
-        sns.histplot(data=subset, x="sequence_length", bins=15, kde=True, ax=ax, color=colors[idx], edgecolor="black")
-        
-        c_mean = subset["sequence_length"].mean()
-        c_median = subset["sequence_length"].median()
-        c_n = len(subset)
-        
-        ax.set_title(f"Class {cls} (N={c_n})", fontsize=12, fontweight='bold')
-        ax.set_xlabel("Sequence Length (Frames)", fontsize=10)
-        ax.set_ylabel("Frequency", fontsize=10)
-        
-        ax.axvline(c_mean, color='red', linestyle='dashed', linewidth=1.5, label=f'Mean: {c_mean:.1f}')
-        ax.axvline(c_median, color='green', linestyle='dotted', linewidth=1.5, label=f'Median: {c_median:.1f}')
-        ax.legend()
-        ax.grid(axis='y', linestyle='--', alpha=0.7)
-
-    plt.suptitle(f"Sequence Length Distributions by Severity Class{title_suffix}", fontsize=16, fontweight='bold', y=1.02)
-    plt.tight_layout()
-    plt.savefig(output_dir / f"{prefix}00b_sequence_length_per_class.png", dpi=300, bbox_inches='tight')
-    plt.close()
-
-# ---------------------------------------------------------
-# COMBINED (SPLIT) VIOLIN PLOTS
+# COMBINED COMPARISON PLOTS
 # ---------------------------------------------------------
 def prepare_combined_dataframe(gt_data, gen_data):
     """
     Merges ground-truth and generated data dicts into one dataframe.
-    Adds 'Source' column for Seaborn split-violins plotting.
+    Adds 'Source' column for Seaborn violins/boxplots plotting.
     """
     records = []
     keys = ["overall"] + sorted([k for k in gt_data.keys() if k != "overall"])
@@ -239,18 +199,16 @@ def prepare_combined_dataframe(gt_data, gen_data):
 
     return pd.DataFrame(records)
 
-def plot_pd_feature_split_violins(df, distances_df, output_dir):
+def plot_pd_feature_comparison_plots(df, distances_df, output_dir):
     """
-    Plots individual split-violin distributions for GT vs Gen data.
+    Plots individual paired distributions for GT vs Gen data.
     Adds text with the KS and Hellinger distances.
     """
     features = [
         {"key": "mean_step_length", "title": "Mean Step Length", "ylabel": "Length (m)"},
-        {"key": "mean_step_asymmetry", "title": "Mean Step Asymmetry", "ylabel": "Difference (m)"},
         {"key": "mean_walking_speed", "title": "Walking Speed", "ylabel": "Speed (m/s)"},
         {"key": "max_ankle_clearance", "title": "Max Ankle Clearance", "ylabel": "Clearance (m)"},
-        {"key": "mean_emos", "title": "Estimated Margin of Stability (eMoS)", "ylabel": "eMoS (m)"},
-        {"key": "mean_jerk", "title": "Mean Joint Jerk (Smoothness)", "ylabel": "Jerk (m/s³)"}
+        {"key": "mean_emos", "title": "Mean Margin of Stability (eMoS)", "ylabel": "eMoS (m)"}
     ]
 
     labels = df["Class_Label"].unique() 
@@ -266,10 +224,10 @@ def plot_pd_feature_split_violins(df, distances_df, output_dir):
         fig, ax = plt.subplots(figsize=(8, 6))
         key = feat_info["key"]
         
-        # Split Violin Plot
-        sns.violinplot(
-            data=df, x="Class_Label", y=key, hue="Source", split=True, 
-            ax=ax, order=labels, inner="quartile",
+        # Side-by-side boxplots
+        sns.boxplot(
+            data=df, x="Class_Label", y=key, hue="Source", 
+            ax=ax, order=labels,
             palette={"Ground Truth": "cornflowerblue", "Generated": "salmon"}
         )
 
@@ -278,10 +236,13 @@ def plot_pd_feature_split_violins(df, distances_df, output_dir):
         ax.set_xlabel("Severity Class\n(Sample sizes: GT / Generated)")
         ax.grid(axis='y', linestyle='--', alpha=0.5)
         
-        # Calculate text placement bounds
+        # Calculate text placement bounds based on actual data min/max
         y_max = df[key].max()
-        y_range = y_max - df[key].min()
-        ax.set_ylim(df[key].min() - (y_range * 0.05), y_max + (y_range * 0.25))
+        y_min = df[key].min()
+
+        y_range = y_max - y_min
+        # Increase top padding to make room for text balloons higher up
+        ax.set_ylim(y_min - (y_range * 0.05), y_max + (y_range * 0.35))
 
         # Plot the scoring text
         x_ticks = [l.get_text() for l in ax.get_xticklabels()]
@@ -294,7 +255,8 @@ def plot_pd_feature_split_violins(df, distances_df, output_dir):
                 h = match.iloc[0]['Hellinger']
                 worst_score = max(ks, h)
                 
-                ax.text(x_idx, y_max + (y_range * 0.05), f"K: {ks:.2f}\nH: {h:.2f}",
+                # Move text higher up: y_max + (y_range * 0.15)
+                ax.text(x_idx, y_max + (y_range * 0.15), f"K: {ks:.2f}\nH: {h:.2f}",
                         ha='center', va='bottom', fontsize=10, fontweight='bold',
                         bbox=dict(facecolor=get_color(worst_score), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
 
@@ -307,7 +269,7 @@ def plot_pd_feature_split_violins(df, distances_df, output_dir):
 
         plt.tight_layout()
         
-        out_filename = output_dir / f"02b_{key}_split_violin.png"
+        out_filename = output_dir / f"02b_{key}_comparison_plot.png"
         plt.savefig(out_filename, dpi=300, bbox_inches='tight')
         plt.close()
 
@@ -341,23 +303,21 @@ if __name__ == "__main__":
         # GT visuals
         print("Generating Ground Truth standalone visualizations...")
         gt_df = prepare_dataframe(gt_data)
-        plot_sequence_length_distribution(gt_df, output_dir, prefix="gt_", dataset_label="Ground Truth")
-        plot_physical_realism_grouped(gt_df, output_dir, prefix="gt_", dataset_label="Ground Truth")
+        plot_dataset_summary_stats(gt_df, output_dir, prefix="gt_", dataset_label="Ground Truth")
         plot_pd_feature_violins(gt_df, output_dir, prefix="gt_", dataset_label="Ground Truth")
 
         # Synthetic data visuals
         print("Generating Generated standalone visualizations...")
         gen_df = prepare_dataframe(gen_data)
-        plot_sequence_length_distribution(gen_df, output_dir, prefix="gen_", dataset_label="Generated")
-        plot_physical_realism_grouped(gen_df, output_dir, prefix="gen_", dataset_label="Generated")
+        plot_dataset_summary_stats(gen_df, output_dir, prefix="gen_", dataset_label="Generated")
         plot_pd_feature_violins(gen_df, output_dir, prefix="gen_", dataset_label="Generated")
 
-        # Combined split violin plots for GT vs Generated data
-        print("Computing distribution distances for split violin plot...")
+        # Combined comparison plots for GT vs Generated data
+        print("Computing distribution distances for comparison plots...")
         comparator = DistributionComparator()
         results = comparator.compare(gt_data, gen_data)
         results_df = comparator._format_results_to_dataframe(results)
         combined_df = prepare_combined_dataframe(gt_data, gen_data)
-        plot_pd_feature_split_violins(combined_df, results_df, output_dir)
+        plot_pd_feature_comparison_plots(combined_df, results_df, output_dir)
 
         print(f"\nSuccessfully generated all visuals in: {output_dir}")
