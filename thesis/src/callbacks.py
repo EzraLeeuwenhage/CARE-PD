@@ -2,6 +2,7 @@ import json
 import numpy as np
 from pathlib import Path
 from collections import defaultdict
+import random
 
 import torch
 import wandb
@@ -89,34 +90,38 @@ class WandBEvaluationCallback(Callback):
                                            dtype=torch.float32)
 
     def on_train_start(self, trainer, pl_module):
-        """Pre-samples and freezes exactly 1 Anchor sequence per severity class (0, 1, 2, 3)."""
+        """Randomly samples and freezes exactly 1 Anchor sequence per severity class (0, 1, 2, 3)."""
         val_loader = trainer.val_dataloaders
         if isinstance(val_loader, list):
             val_loader = val_loader[0]
             
-        found_classes = set()
-        print("\n[W&B Callback] Caching Anchor Sequences across Severity Classes...")
+        print("\n[W&B Callback] Randomly Sampling Anchor Sequences across Severity Classes...")
         
+        candidates = defaultdict(list)
         for prefix, target, severity in val_loader:
             for b_idx in range(severity.shape[0]):
                 sev_val = severity[b_idx].item()
-                if sev_val not in found_classes:
-                    pref_single = {k: v[b_idx:b_idx+1].to(pl_module.device) for k, v in prefix.items()}
-                    targ_single = {k: v[b_idx:b_idx+1].to(pl_module.device) for k, v in target.items()}
-                    
-                    x_0 = generate_prior_from_prefix(pref_single, targ_single)
-                    self.anchors[sev_val] = {
-                        "prefix": pref_single,
-                        "x_0": x_0,
-                        "target": targ_single,
-                        "severity": sev_val
-                    }
-                    found_classes.add(sev_val)
-                    print(f"  -> Locked Anchor for Severity Class {sev_val}")
-                if len(found_classes) == 4:
-                    break
-            if len(found_classes) == 4:
-                break
+                # Keep temps on CPU during sampling
+                pref_single = {k: v[b_idx:b_idx+1].cpu() for k, v in prefix.items()}
+                targ_single = {k: v[b_idx:b_idx+1].cpu() for k, v in target.items()}
+                candidates[sev_val].append((pref_single, targ_single))
+                
+        # pick one random anchor per severity class
+        for sev_val in sorted(candidates.keys()):
+            pref_single, targ_single = random.choice(candidates[sev_val])
+
+            # Move anchors to device
+            pref_single = {k: v.to(pl_module.device) for k, v in pref_single.items()}
+            targ_single = {k: v.to(pl_module.device) for k, v in targ_single.items()}
+            
+            x_0 = generate_prior_from_prefix(pref_single, targ_single)
+            self.anchors[sev_val] = {
+                "prefix": pref_single,
+                "x_0": x_0,
+                "target": targ_single,
+                "severity": sev_val
+            }
+            print(f"  -> Locked Random Anchor for Severity Class {sev_val}")
 
     def on_validation_epoch_end(self, trainer, pl_module):
         epoch = trainer.current_epoch + 1
@@ -128,7 +133,7 @@ class WandBEvaluationCallback(Callback):
         if isinstance(val_loader, list):
             val_loader = val_loader[0]
 
-        # 1. Generate Synthetic Suffixes
+        # Generate Synthetic Suffixes
         data_dict = generate_trajectories(
             model=pl_module, 
             dataloader=val_loader, 
@@ -140,7 +145,7 @@ class WandBEvaluationCallback(Callback):
             force_joint_conditioning=self.force_joint_cond
         )
 
-        # 2. Convert 6D to H36M and SMPL
+        # Convert 6D to H36M and SMPL
         self.smpl_model = self.smpl_model.to(pl_module.device)
         self.h36m_regressor = self.h36m_regressor.to(pl_module.device)
 
@@ -176,14 +181,14 @@ class WandBEvaluationCallback(Callback):
             gen_6d_dict[f"{seq_key}_trans"] = trans_gen_t.cpu().numpy()
             gen_h36m_dict[seq_key] = forward_6d_to_h36m(pose_gen_t, trans_gen_t, self.smpl_model, self.h36m_regressor, pl_module.device)
 
-        # 3. Extract Generated Metrics
+        # Extract Generated Metrics
         gen_h36m_data, _ = self.h36m_evaluator.evaluate_from_memory(gen_h36m_dict, gen_key_to_severity)
         
         smpl_summary, smpl_cache_data = self.smpl_evaluator.evaluate_from_memory(
             self.gt_6d_dict, gen_6d_dict, self.gt_key_to_severity, verbose=False
         )
 
-        # 4. H36M Distribution Distances & Plots
+        # H36M Distribution Distances & Plots
         h36m_results = self.comparator.compare(self.gt_h36m_data, gen_h36m_data)
         h36m_dist_df = self.comparator._format_results_to_dataframe(h36m_results)
         
@@ -194,7 +199,7 @@ class WandBEvaluationCallback(Callback):
         plot_pd_feature_violins(gen_df, self.vis_dir, prefix="gen_")
         plot_pd_feature_comparison_plots(combined_df, h36m_dist_df, self.vis_dir)
 
-        # 5. SMPL Distribution Distances & Plots
+        # SMPL Distribution Distances & Plots
         gt_comp, gen_comp = defaultdict(dict), defaultdict(dict)
         target_sparc_joints = ['L_Hip', 'R_Hip', 'L_Knee', 'R_Knee', 'L_Ankle', 'R_Ankle']
         
@@ -217,7 +222,7 @@ class WandBEvaluationCallback(Callback):
         plot_arm_swing_metrics(smpl_cache_data, self.vis_dir, distances_df=smpl_dist_df)
         plot_sparc_metrics(smpl_cache_data, self.vis_dir, distances_df=smpl_dist_df)
 
-        # 6. Render Side-by-Side Anchor GIFs (Prior vs Generated Suffix)
+        # Render Side-by-Side Anchor GIFs (Prior vs Generated Suffix)
         gif_paths = []
         for sev_val, anchor_data in self.anchors.items():
             if self.is_joint_model:
@@ -249,13 +254,13 @@ class WandBEvaluationCallback(Callback):
             render_three_way_gif(seq_gt, seq_prior, seq_gen, sev_val, gif_path, elev=20, azim=45, roll=135, gen_severity=gen_sev_val)
             gif_paths.append(gif_path)
 
-        # 7. Extract Physical Realism Scalar Baselines
+        # Extract Physical Realism Scalar Baselines
         gt_floating = float(np.nanmean(self.gt_h36m_data["overall"]["floating"]))
         gen_floating = float(np.nanmean(gen_h36m_data["overall"]["floating"]))
         gt_foot_disp = float(np.nanmean(self.gt_h36m_data["overall"]["mean_stance_displacement"]))
         gen_foot_disp = float(np.nanmean(gen_h36m_data["overall"]["mean_stance_displacement"]))
 
-        # 8. Log Everything to Weights & Biases
+        # Log Everything to Weights & Biases
         wandb_logs = {
             "physical_realism/floating_gen": gen_floating,
             "physical_realism/floating_gt": gt_floating,
