@@ -48,12 +48,14 @@ def generate_prior_from_prefix(prefix_dict, target_dict, s_scale=1.0):
 
 
 if __name__ == "__main__":
+    from thesis.utils.pipeline_utils import load_config
     from thesis.src.dataloader import get_dataloader
     from thesis.utils.sixD2smpl import build_smpl_pkl_from_6d_smpl
     from thesis.src.care_pd.smpl2h36m import convert_smpl_to_h36m
 
     print("Initializing Dataloader...")
-    loader = get_dataloader(config_path="thesis/configs/dataloader.yaml")
+    cfg = load_config("thesis/configs/baseline.yaml")
+    loader = get_dataloader(cfg, mode='test', is_joint_model_train=False)
     prefix, target, severity = next(iter(loader))
     
     # Extract just the first sample from the batch
@@ -76,9 +78,9 @@ if __name__ == "__main__":
     print(f"   Full Sequence 6D Pose Shape:  {full_seq_6d.shape}")
     print(f"   Full Sequence Trans Shape:    {full_seq_trans.shape}")
     
-    temp_pkl_path = "thesis/data/processed/PD-GaM/SMPL/example_generated_prior.pkl"
-    final_h36m_dir = "thesis/data/processed/PD-GaM/h36m/"
-    final_npz_path = Path(final_h36m_dir) / "example_generated_prior__2_h36m_sideright_cam.npz"
+    temp_pkl_path = "thesis/data/processed/test_gen_prior/SMPL/example_generated_prior.pkl"
+    final_h36m_dir = "thesis/data/processed/test_gen_prior/h36m/"
+    final_npz_path = Path(final_h36m_dir) / "example_generated_prior_h36m_3d_world.npz"
     
     print("\nConverting 6D -> SMPL (.pkl)...")
     build_smpl_pkl_from_6d_smpl(
