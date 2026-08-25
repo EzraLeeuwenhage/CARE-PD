@@ -9,161 +9,22 @@ from pathlib import Path
 import torch
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.callbacks import Callback, ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint
 
+from thesis.src.callbacks import EpochAndValPrintCallback, WandBEvaluationCallback
 from thesis.src.model import ConditionalBaselineModel, JointBaselineModel
 from thesis.src.dataloader import get_dataloader
 from thesis.src.sample import generate_trajectories
-from thesis.utils.sixD2smpl import build_smpl_pkl_from_6d_smpl
-from thesis.src.care_pd.smpl2h36m import convert_smpl_to_h36m
-from thesis.src.evaluate_h36m import H36MEvaluator
-from thesis.src.evaluate_smpl import SMPLEvaluator
+from thesis.utils.pipeline_utils import load_config, format_and_convert, evaluate_pipeline
 
 
 CONFIG_PATH = "thesis/configs/baseline.yaml"
 
-def load_config():
-    with open(CONFIG_PATH, 'r') as f:
-        cfg = yaml.safe_load(f)
-
-    model_name = cfg['model']['name']
-    cfg['paths']['output_dir'] = cfg['paths']['output_dir'].format(model_name=model_name)
-    return cfg
-
-class EpochAndValPrintCallback(Callback):
-    """Custom callback to print train and val metrics at specified epoch intervals."""
-    def __init__(self, train_interval, val_interval):
-        super().__init__()
-        self.train_interval = train_interval
-        self.val_interval = val_interval
-
-    def on_train_epoch_end(self, trainer, pl_module):
-        epoch = trainer.current_epoch + 1
-        if epoch % self.train_interval == 0:
-            loss = trainer.callback_metrics.get("train/loss_total")
-            loss_val = f"{loss.item():.4f}" if loss is not None else "N/A"
-            print(f"Epoch {epoch:04d}/{trainer.max_epochs} | Train Loss: {loss_val}")
-
-    def on_validation_epoch_end(self, trainer, pl_module):
-        if trainer.sanity_checking:
-            return
-            
-        epoch = trainer.current_epoch + 1
-        if epoch % self.val_interval == 0:
-            mpjae = trainer.callback_metrics.get("val/mpjae_rad")
-            acc = trainer.callback_metrics.get("val/label_accuracy")
-            
-            mpjae_str = f"{mpjae.item():.4f} rad" if mpjae is not None else "N/A"
-            
-            # Format depending on whether it's joint or conditional model
-            if acc is not None:
-                acc_str = f"{acc.item():.4f}"
-                print(f" >>> VALIDATION Epoch {epoch:04d} | MPJAE: {mpjae_str} | Label Acc: {acc_str}")
-            else:
-                print(f" >>> VALIDATION Epoch {epoch:04d} | MPJAE: {mpjae_str}")
-
-
-def format_and_convert(data_dict, cfg, is_joint_model=False):
-    out_dir = Path(cfg['paths']['output_dir'])
-
-    smpl_dir = out_dir / "SMPL"
-    h36m_dir = out_dir / "h36m"
-    sixd_dir = out_dir / "6D_SMPL"
-    
-    smpl_dir.mkdir(parents=True, exist_ok=True)
-    h36m_dir.mkdir(parents=True, exist_ok=True)
-    sixd_dir.mkdir(parents=True, exist_ok=True)
-    
-    gt_pkl = smpl_dir / "ground_truth.pkl"
-    gen_pkl = smpl_dir / "generated.pkl"
-    
-    gt_h36m = h36m_dir / "ground_truth_3d_world.npz"
-    gen_h36m = h36m_dir / "generated_3d_world.npz"
-    
-    gt_6d_npz = sixd_dir / "ground_truth_6d.npz"
-    gen_6d_npz = sixd_dir / "generated_6d.npz"
-
-    gt_dict, gen_dict = {}, {}
-    gt_labels, gen_labels = {"key_to_severity": {}}, {"key_to_severity": {}}
-    
-    gen_severities_list = data_dict["gen_severities"] if is_joint_model else data_dict["severities"]
-
-    print("Formatting and caching raw 6D sequences...")
-    for i, gt_sev in enumerate(data_dict["severities"]):
-        seq_key = f"seq_{i:03d}"
-
-        # Save 6D SMPL sequences to NPZ files for both ground truth and generated data
-        gt_dict[seq_key] = data_dict["gt"]["pose"][i].numpy()
-        gt_dict[f"{seq_key}_trans"] = data_dict["gt"]["trans"][i].numpy()
-        gen_dict[seq_key] = data_dict["gen"]["pose"][i].numpy()
-        gen_dict[f"{seq_key}_trans"] = data_dict["gen"]["trans"][i].numpy()
-        
-        gen_sev = gen_severities_list[i]
-        
-        # Registry mapping for SMPLEvaluator (Matches 6D Seq keys)
-        gt_labels["key_to_severity"][seq_key] = gt_sev
-        gen_labels["key_to_severity"][seq_key] = gen_sev
-        
-        # Registry mapping for H36MEvaluator (Matches converted .pkl keys)
-        gt_labels["key_to_severity"][f"GT__gt_{i:03d}"] = gt_sev
-        gen_labels["key_to_severity"][f"GEN__gen_{i:03d}"] = gen_sev
-
-    np.savez(gt_6d_npz, **gt_dict)
-    np.savez(gen_6d_npz, **gen_dict)
-    
-    if gt_h36m.exists() and gt_pkl.exists():
-        print("Ground Truth H36M data already exists.")
-    else:
-        print("Formatting Ground Truth to SMPL...")
-        build_smpl_pkl_from_6d_smpl(data_dict["gt"]["pose"], data_dict["gt"]["trans"], str(gt_pkl), "GT", "gt")
-        print("Converting Ground Truth SMPL -> H36M (This takes a moment)...")
-        convert_smpl_to_h36m(str(gt_pkl), str(gt_h36m.parent), gt_h36m.name)
-    
-    print("Formatting Generated data to SMPL...")
-    build_smpl_pkl_from_6d_smpl(data_dict["gen"]["pose"], data_dict["gen"]["trans"], str(gen_pkl), "GEN", "gen")
-    print("Converting Generated SMPL -> H36M...")
-    convert_smpl_to_h36m(str(gen_pkl), str(gen_h36m.parent), gen_h36m.name)
-        
-    gt_labels_path = h36m_dir / "gt_labels.json"
-    gen_labels_path = h36m_dir / "gen_labels.json"
-    
-    with open(gt_labels_path, 'w') as f: json.dump(gt_labels, f)
-    with open(gen_labels_path, 'w') as f: json.dump(gen_labels, f)
-        
-    return {
-        "gt_6d": gt_6d_npz, "gen_6d": gen_6d_npz, "gt_h36m": gt_h36m,
-        "gen_h36m": gen_h36m, "gt_labels": gt_labels_path,
-        "gen_labels": gen_labels_path, "out_dir": out_dir
-    }
-
-
-def evaluate_pipeline(paths):
-    evaluator = H36MEvaluator(fps=30)
-    evaluator.evaluate_and_cache(
-        npz_path=str(paths["gt_h36m"]),
-        labels_path=str(paths["gt_labels"]),
-        cache_output_path=str(paths["out_dir"] / "evaluation" / "gt_h36m_distributions.pkl")
-    )
-    evaluator.evaluate_and_cache(
-        npz_path=str(paths["gen_h36m"]),
-        labels_path=str(paths["gen_labels"]),
-        cache_output_path=str(paths["out_dir"] / "evaluation" / "gen_h36m_distributions.pkl"),
-        synthetic=True
-    )
-
-    smpl_evaluator = SMPLEvaluator()
-    smpl_evaluator.evaluate_and_cache(
-        gt_npz_path=paths["gt_6d"],
-        gen_npz_path=paths["gen_6d"],
-        labels_path=paths["gen_labels"],
-        cache_output_path=str(paths["out_dir"] / "evaluation" / "smpl_mpjae_evaluation.json"),
-        verbose=True
-    )
-
 
 if __name__ == "__main__":
-    cfg = load_config()
+    cfg = load_config(CONFIG_PATH)
     is_joint_model = cfg['model'].get('is_joint_model', False)
+    force_joint_cond = cfg['sampling'].get('force_joint_conditioning', False)
     model_name = cfg['model'].get('name', 'GenerativeModel')
     print(f"\nStarting model train-test pipeline for '{model_name}' (Joint Model: {is_joint_model})...")
 
@@ -190,26 +51,31 @@ if __name__ == "__main__":
         config=cfg
     )
     
-    eval_interval = cfg['training'].get('eval_interval', 10)
     log_interval = cfg['training'].get('log_interval', 5)
+    eval_interval = cfg['training'].get('eval_interval', 10)
+    wandb_eval_interval = cfg['training'].get('wandb_eval_interval', 50)
 
     print_callback = EpochAndValPrintCallback(
         train_interval=log_interval, 
         val_interval=eval_interval
     )
     
-    ckpt_dir = Path(cfg['paths']['output_dir']) / "checkpoints"
+    wandb_eval_callback = WandBEvaluationCallback(
+        cfg=cfg, 
+        eval_interval=wandb_eval_interval
+    )
+    
     checkpoint_callback = ModelCheckpoint(
         monitor="val/mpjae_rad", 
         mode="min", 
         save_top_k=1,
-        dirpath=str(ckpt_dir),
+        dirpath=str(Path(cfg['paths']['output_dir']) / "checkpoints"),
         filename=f"best-{{epoch:02d}}-{{val/mpjae_rad:.4f}}"
     )
 
     trainer = pl.Trainer(
         logger=wandb_logger,
-        callbacks=[print_callback, checkpoint_callback],
+        callbacks=[print_callback, checkpoint_callback, wandb_eval_callback],
         enable_progress_bar=False,
         max_epochs=cfg['training']['epochs'],
         precision="16-mixed",
@@ -236,7 +102,8 @@ if __name__ == "__main__":
         device=device,
         max_batches=-1,
         desc="Generating Final Test Set", 
-        is_joint_model=is_joint_model
+        is_joint_model=is_joint_model,
+        force_joint_conditioning=force_joint_cond
     )
 
     if is_joint_model:

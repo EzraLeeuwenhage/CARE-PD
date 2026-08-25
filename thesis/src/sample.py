@@ -19,7 +19,8 @@ def save_generated_to_npz(full_seq_6d, full_seq_trans, output_dir, filename="gen
     print(f"Saved Trans Shape: {trans_np.shape}")
 
 @torch.no_grad()
-def generate_trajectories(model, dataloader, num_steps, device, max_batches=-1, desc="Generating", is_joint_model=False):
+def generate_trajectories(model, dataloader, num_steps, device, max_batches=-1, desc="Generating", 
+                          is_joint_model=False, force_joint_conditioning=False):
     """Generates synthetic dataset using model and dataloader."""
     model.eval()
     
@@ -44,11 +45,18 @@ def generate_trajectories(model, dataloader, num_steps, device, max_batches=-1, 
         
         x_0 = generate_prior_from_prefix(prefix, target)
 
-        # handle conditional vs joint generation
+        # Handle conditional, joint (MGM-Joint), and forced joint (MGM-Cond) generation
         if is_joint_model:
-            gen_suffix, gen_severity = model.generate_suffix(prefix, x_0, severity_score=None, num_steps=num_steps)
+            if force_joint_conditioning:
+                # MGM-Cond: Force the severity score to match the ground truth prefix
+                gen_suffix, gen_severity = model.generate_suffix(prefix, x_0, severity_score=severity, 
+                                                                 num_steps=num_steps)
+            else:
+                # MGM-Joint: Let the model predict its own severity score via jump process
+                gen_suffix, gen_severity = model.generate_suffix(prefix, x_0, severity_score=None, num_steps=num_steps)
             all_gen_severities.extend(gen_severity.cpu().tolist())
         else:
+            # CFM-Cond: Standard conditional model
             gen_suffix = model.generate_suffix(prefix, x_0, severity_score=severity, num_steps=num_steps)
             all_gen_severities.extend(severity.cpu().tolist())            
         
