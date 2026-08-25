@@ -3,12 +3,27 @@ import json
 from pathlib import Path
 import yaml
 import torch
+from collections import defaultdict
 from smplx.lbs import vertices2joints
 
 from thesis.utils.sixD2smpl import build_smpl_pkl_from_6d_smpl, convert_6d_to_smpl
 from thesis.src.care_pd.smpl2h36m import convert_smpl_to_h36m
 from thesis.src.evaluate_h36m import H36MEvaluator
 from thesis.src.evaluate_smpl import SMPLEvaluator
+from thesis.src.evaluate_distributions import DistributionComparator
+
+from thesis.utils.visualize_h36m_metric_dist import (
+    plot_dataset_summary_stats,
+    plot_pd_feature_violins,
+    plot_pd_feature_comparison_plots,
+    prepare_dataframe,
+    prepare_combined_dataframe
+)
+from thesis.utils.visualize_smpl_metric_dist import (
+    plot_smpl_mpjae,
+    plot_arm_swing_metrics,
+    plot_sparc_metrics
+)
 
 
 def load_config(CONFIG_PATH="thesis/configs/baseline.yaml"):
@@ -93,14 +108,15 @@ def format_and_convert(data_dict, cfg, is_joint_model=False):
         "gen_labels": gen_labels_path, "out_dir": out_dir
     }
 
+
 def evaluate_pipeline(paths):
     evaluator = H36MEvaluator(fps=30)
-    evaluator.evaluate_and_cache(
+    gt_h36m_data = evaluator.evaluate_and_cache(
         npz_path=str(paths["gt_h36m"]),
         labels_path=str(paths["gt_labels"]),
         cache_output_path=str(paths["out_dir"] / "evaluation" / "gt_h36m_distributions.pkl")
     )
-    evaluator.evaluate_and_cache(
+    gen_h36m_data = evaluator.evaluate_and_cache(
         npz_path=str(paths["gen_h36m"]),
         labels_path=str(paths["gen_labels"]),
         cache_output_path=str(paths["out_dir"] / "evaluation" / "gen_h36m_distributions.pkl"),
@@ -108,13 +124,62 @@ def evaluate_pipeline(paths):
     )
 
     smpl_evaluator = SMPLEvaluator()
+    smpl_eval_path = paths["out_dir"] / "evaluation" / "smpl_mpjae_evaluation.json"
     smpl_evaluator.evaluate_and_cache(
         gt_npz_path=paths["gt_6d"],
         gen_npz_path=paths["gen_6d"],
         labels_path=paths["gen_labels"],
-        cache_output_path=str(paths["out_dir"] / "evaluation" / "smpl_mpjae_evaluation.json"),
+        cache_output_path=str(smpl_eval_path),
         verbose=True
     )
+
+    print("\nGenerating and saving Final Test Set visualizations...")
+    model_folder = paths["out_dir"].name
+    vis_out_dir = Path(f"thesis/visualizations/{model_folder}")
+    vis_out_dir.mkdir(parents=True, exist_ok=True)
+    
+    comparator = DistributionComparator()
+    
+    # H36M Distribution Plots
+    h36m_results = comparator.compare(gt_h36m_data, gen_h36m_data)
+    h36m_dist_df = comparator._format_results_to_dataframe(h36m_results)
+    
+    gen_df = prepare_dataframe(gen_h36m_data)
+    combined_df = prepare_combined_dataframe(gt_h36m_data, gen_h36m_data)
+    
+    plot_dataset_summary_stats(gen_df, vis_out_dir, prefix="gen_", dataset_label="Final Test Set")
+    plot_pd_feature_violins(gen_df, vis_out_dir, prefix="gen_", dataset_label="Final Test Set")
+    plot_pd_feature_comparison_plots(combined_df, h36m_dist_df, vis_out_dir)
+    
+    # SMPL Distribution Plots
+    with open(smpl_eval_path, 'r') as f:
+        smpl_json = json.load(f)
+        
+    gt_comp, gen_comp = defaultdict(dict), defaultdict(dict)
+    target_sparc_joints = ['L_Hip', 'R_Hip', 'L_Knee', 'R_Knee', 'L_Ankle', 'R_Ankle']
+    
+    for sev_key, metrics in smpl_json.get("raw_distributions", {}).items():
+        c_key = "overall" if sev_key == "Overall" else sev_key.replace("Class ", "")
+        
+        gt_comp[c_key]["Swing Asymmetry (SI)"] = np.array(metrics.get("GT_Symmetry_Index", []))
+        gen_comp[c_key]["Swing Asymmetry (SI)"] = np.array(metrics.get("Gen_Symmetry_Index", []))
+        
+        gt_legs, gen_legs = [], []
+        for j in target_sparc_joints:
+            gt_legs.extend(metrics.get(f"GT_SPARC_{j}", []))
+            gen_legs.extend(metrics.get(f"Gen_SPARC_{j}", []))
+        gt_comp[c_key]["SPARC_Lower_Limbs"] = np.array(gt_legs)
+        gen_comp[c_key]["SPARC_Lower_Limbs"] = np.array(gen_legs)
+        
+    smpl_dist_df = comparator._format_results_to_dataframe(comparator.compare(gt_comp, gen_comp))
+    
+    # Pass the loaded dictionary instead of a path to plot directly
+    plot_smpl_mpjae(smpl_json, vis_out_dir)
+    plot_arm_swing_metrics(smpl_json, vis_out_dir, distances_df=smpl_dist_df)
+    plot_sparc_metrics(smpl_json, vis_out_dir, distances_df=smpl_dist_df)
+    
+    print(f"Final Test visual artifacts saved permanently to: {vis_out_dir}")
+
 
 def forward_6d_to_h36m(pose_6d, trans, smpl_model, h36m_regressor, device):
     """
