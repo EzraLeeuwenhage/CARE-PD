@@ -28,7 +28,8 @@ training:
   test_split: 0.2
 
   log_interval: 5
-  eval_interval: 10   
+  eval_log_interval: 10
+  wandb_eval_interval: 50   
   eval_batches: -1      # where '-1' means all batches in the validation set
   num_workers: 2
 
@@ -38,6 +39,7 @@ training:
 
 sampling:
   num_steps: 20
+  force_joint_conditioning: false   # If true, use MGM-Cond (force fixed severity score)
 
 paths:
   weights_dir: "thesis/data/checkpoints"
