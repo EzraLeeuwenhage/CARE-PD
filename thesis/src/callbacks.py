@@ -14,7 +14,7 @@ from thesis.src.evaluate_h36m import H36MEvaluator
 from thesis.src.evaluate_smpl import SMPLEvaluator
 from thesis.src.evaluate_distributions import DistributionComparator
 from thesis.src.generate_prior import generate_prior_from_prefix
-from thesis.utils.pipeline_utils import format_and_convert, forward_6d_to_h36m
+from thesis.utils.pipeline_utils import forward_6d_to_h36m
 from thesis.utils.visualize_h36m_metric_dist import (
     plot_dataset_summary_stats,
     plot_pd_feature_violins,
@@ -63,7 +63,7 @@ class EpochAndValPrintCallback(Callback):
 
 
 class WandBEvaluationCallback(Callback):
-    """Evaluates generated distributions, logs scalar baselines, visual plots, and Anchor GIFs to W&B."""
+    """Evaluates generated distributions, logs scalar baselines, visual plots, and Anchor GIFs entirely in RAM."""
     def __init__(self, cfg, eval_interval=50):
         super().__init__()
         self.cfg = cfg
@@ -72,18 +72,21 @@ class WandBEvaluationCallback(Callback):
         self.force_joint_cond = cfg['sampling'].get('force_joint_conditioning', False)
         
         self.cache_dir = Path(cfg['paths']['output_dir']) / "wandb_eval_cache"
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.vis_dir = self.cache_dir / "visualizations"
         self.vis_dir.mkdir(parents=True, exist_ok=True)
         
         self.anchors = {}
+        self.gt_6d_dict = None
+        self.gt_h36m_dict = None
+        self.gt_key_to_severity = None
         self.gt_h36m_data = None
         self.h36m_evaluator = H36MEvaluator(fps=30)
         self.smpl_evaluator = SMPLEvaluator(fps=30)
         self.comparator = DistributionComparator()
 
         self.smpl_model = SMPL(model_path='thesis/data/care_pd_preprocessing/SMPL_NEUTRAL.pkl', num_betas=10).eval()
-        self.h36m_regressor = torch.tensor(np.load('thesis/data/care_pd_preprocessing/J_regressor_h36m_correct.npy'), dtype=torch.float32)
+        self.h36m_regressor = torch.tensor(np.load('thesis/data/care_pd_preprocessing/J_regressor_h36m_correct.npy'), 
+                                           dtype=torch.float32)
 
     def on_train_start(self, trainer, pl_module):
         """Pre-samples and freezes exactly 1 Anchor sequence per severity class (0, 1, 2, 3)."""
@@ -120,12 +123,12 @@ class WandBEvaluationCallback(Callback):
         if trainer.sanity_checking or epoch % self.eval_interval != 0:
             return
 
-        print(f"\n--- [W&B Callback] Running Full Validation Suite (Epoch {epoch}) ---")
+        print(f"\n--- [W&B Callback] Running Validation (Epoch {epoch}) ---")
         val_loader = trainer.val_dataloaders
         if isinstance(val_loader, list):
             val_loader = val_loader[0]
 
-        # 1. Generate Synthetic Suffixes for validation split
+        # 1. Generate Synthetic Suffixes
         data_dict = generate_trajectories(
             model=pl_module, 
             dataloader=val_loader, 
@@ -137,29 +140,50 @@ class WandBEvaluationCallback(Callback):
             force_joint_conditioning=self.force_joint_cond
         )
 
-        # 2. Format & Convert to SMPL / H36M
-        temp_cfg = self.cfg.copy()
-        temp_cfg['paths']['output_dir'] = str(self.cache_dir)
-        paths = format_and_convert(data_dict, temp_cfg, is_joint_model=self.is_joint_model)
+        # 2. Convert 6D to H36M and SMPL
+        self.smpl_model = self.smpl_model.to(pl_module.device)
+        self.h36m_regressor = self.h36m_regressor.to(pl_module.device)
 
-        # 3. Extract H36M & SMPL Metric Distributions
-        if self.gt_h36m_data is None:
-            self.gt_h36m_data = self.h36m_evaluator.evaluate_and_cache(
-                paths["gt_h36m"], paths["gt_labels"], self.cache_dir / "gt_h36m.pkl", synthetic=False
-            )
-            
-        gen_h36m_data = self.h36m_evaluator.evaluate_and_cache(
-            paths["gen_h36m"], paths["gen_labels"], self.cache_dir / "gen_h36m.pkl", synthetic=True
-        )
-        smpl_summary = self.smpl_evaluator.evaluate_and_cache(
-            gt_npz_path=paths["gt_6d"], 
-            gen_npz_path=paths["gen_6d"], 
-            labels_path=paths["gen_labels"], 
-            cache_output_path=str(self.cache_dir / "smpl_eval.json"), 
-            verbose=False
+        gen_6d_dict, gen_h36m_dict, gen_key_to_severity = {}, {}, {}
+        gen_sevs_list = data_dict["gen_severities"] if self.is_joint_model else data_dict["severities"]
+
+        # Only compute GT metrics once and cache in memory for future validation epochs
+        if self.gt_6d_dict is None:
+            self.gt_6d_dict, self.gt_h36m_dict, self.gt_key_to_severity = {}, {}, {}
+
+            for i, gt_sev in enumerate(data_dict["severities"]):
+                seq_key = f"seq_{i:03d}"
+                self.gt_key_to_severity[seq_key] = gt_sev
+                
+                pose_gt_t = data_dict["gt"]["pose"][i]
+                trans_gt_t = data_dict["gt"]["trans"][i]
+
+                self.gt_6d_dict[seq_key] = pose_gt_t.cpu().numpy()
+                self.gt_6d_dict[f"{seq_key}_trans"] = trans_gt_t.cpu().numpy()
+                self.gt_h36m_dict[seq_key] = forward_6d_to_h36m(pose_gt_t, trans_gt_t, self.smpl_model, self.h36m_regressor, pl_module.device)
+
+            # Extract GT metrics once and hold in memory forever
+            self.gt_h36m_data, _ = self.h36m_evaluator.evaluate_from_memory(self.gt_h36m_dict, self.gt_key_to_severity)
+
+        for i, gen_sev in enumerate(gen_sevs_list):
+            seq_key = f"seq_{i:03d}"
+            gen_key_to_severity[seq_key] = gen_sev
+
+            pose_gen_t = data_dict["gen"]["pose"][i]
+            trans_gen_t = data_dict["gen"]["trans"][i]
+
+            gen_6d_dict[seq_key] = pose_gen_t.cpu().numpy()
+            gen_6d_dict[f"{seq_key}_trans"] = trans_gen_t.cpu().numpy()
+            gen_h36m_dict[seq_key] = forward_6d_to_h36m(pose_gen_t, trans_gen_t, self.smpl_model, self.h36m_regressor, pl_module.device)
+
+        # 3. Extract Generated Metrics
+        gen_h36m_data, _ = self.h36m_evaluator.evaluate_from_memory(gen_h36m_dict, gen_key_to_severity)
+        
+        smpl_summary, smpl_cache_data = self.smpl_evaluator.evaluate_from_memory(
+            self.gt_6d_dict, gen_6d_dict, self.gt_key_to_severity, verbose=False
         )
 
-        # 4. Distribution Distances (H36M)
+        # 4. H36M Distribution Distances & Plots
         h36m_results = self.comparator.compare(self.gt_h36m_data, gen_h36m_data)
         h36m_dist_df = self.comparator._format_results_to_dataframe(h36m_results)
         
@@ -170,17 +194,13 @@ class WandBEvaluationCallback(Callback):
         plot_pd_feature_violins(gen_df, self.vis_dir, prefix="gen_")
         plot_pd_feature_comparison_plots(combined_df, h36m_dist_df, self.vis_dir)
 
-        # 5. Distribution Distances (SMPL)
-        with open(self.cache_dir / "smpl_eval.json", 'r') as f:
-            smpl_json = json.load(f)
-        
+        # 5. SMPL Distribution Distances & Plots
         gt_comp, gen_comp = defaultdict(dict), defaultdict(dict)
         target_sparc_joints = ['L_Hip', 'R_Hip', 'L_Knee', 'R_Knee', 'L_Ankle', 'R_Ankle']
         
-        for sev_key, metrics in smpl_json.get("raw_distributions", {}).items():
+        for sev_key, metrics in smpl_cache_data.get("raw_distributions", {}).items():
             c_key = "overall" if sev_key == "Overall" else sev_key.replace("Class ", "")
             
-            # Isolated strictly to Swing Asymmetry
             gt_comp[c_key]["Swing Asymmetry (SI)"] = np.array(metrics.get("GT_Symmetry_Index", []))
             gen_comp[c_key]["Swing Asymmetry (SI)"] = np.array(metrics.get("Gen_Symmetry_Index", []))
             
@@ -193,18 +213,15 @@ class WandBEvaluationCallback(Callback):
             
         smpl_dist_df = self.comparator._format_results_to_dataframe(self.comparator.compare(gt_comp, gen_comp))
 
-        plot_smpl_mpjae(self.cache_dir / "smpl_eval.json", self.vis_dir)
-        plot_arm_swing_metrics(self.cache_dir / "smpl_eval.json", self.vis_dir, distances_df=smpl_dist_df)
-        plot_sparc_metrics(self.cache_dir / "smpl_eval.json", self.vis_dir, distances_df=smpl_dist_df)
+        plot_smpl_mpjae(smpl_cache_data, self.vis_dir)
+        plot_arm_swing_metrics(smpl_cache_data, self.vis_dir, distances_df=smpl_dist_df)
+        plot_sparc_metrics(smpl_cache_data, self.vis_dir, distances_df=smpl_dist_df)
 
         # 6. Render Side-by-Side Anchor GIFs (Prior vs Generated Suffix)
         gif_paths = []
-        self.smpl_model = self.smpl_model.to(pl_module.device)
-        self.h36m_regressor = self.h36m_regressor.to(pl_module.device)
-        
         for sev_val, anchor_data in self.anchors.items():
             if self.is_joint_model:
-                sev_tensor = torch.tensor([sev_val]).to(pl_module.device) if self.cfg['sampling'].get('force_joint_conditioning', False) else None
+                sev_tensor = torch.tensor([sev_val]).to(pl_module.device) if self.force_joint_cond else None
                 gen_suffix, gen_severity = pl_module.generate_suffix(
                     anchor_data["prefix"], anchor_data["x_0"], severity_score=sev_tensor, num_steps=self.cfg['sampling']['num_steps']
                 )
@@ -215,7 +232,6 @@ class WandBEvaluationCallback(Callback):
                 )
                 gen_sev_val = sev_val
                 
-            # Concatenate 6D Tensors (Prefix + Suffix)
             gt_full_pose = torch.cat([anchor_data["prefix"]['pose'], anchor_data["target"]['pose']], dim=1)[0]
             gt_full_trans = torch.cat([anchor_data["prefix"]['trans'], anchor_data["target"]['trans']], dim=1)[0]
             
@@ -225,12 +241,10 @@ class WandBEvaluationCallback(Callback):
             gen_full_pose = torch.cat([anchor_data["prefix"]['pose'], gen_suffix['pose']], dim=1)[0]
             gen_full_trans = torch.cat([anchor_data["prefix"]['trans'], gen_suffix['trans']], dim=1)[0]
             
-            # Direct In-Memory Conversion to 3D H36M NumPy arrays
             seq_gt = forward_6d_to_h36m(gt_full_pose, gt_full_trans, self.smpl_model, self.h36m_regressor, pl_module.device)
             seq_prior = forward_6d_to_h36m(prior_full_pose, prior_full_trans, self.smpl_model, self.h36m_regressor, pl_module.device)
             seq_gen = forward_6d_to_h36m(gen_full_pose, gen_full_trans, self.smpl_model, self.h36m_regressor, pl_module.device)
             
-            # Render GIF
             gif_path = self.vis_dir / f"anchor_class_{sev_val}_epoch_{epoch}.gif"
             render_three_way_gif(seq_gt, seq_prior, seq_gen, sev_val, gif_path, elev=20, azim=45, roll=135, gen_severity=gen_sev_val)
             gif_paths.append(gif_path)
@@ -238,13 +252,11 @@ class WandBEvaluationCallback(Callback):
         # 7. Extract Physical Realism Scalar Baselines
         gt_floating = float(np.nanmean(self.gt_h36m_data["overall"]["floating"]))
         gen_floating = float(np.nanmean(gen_h36m_data["overall"]["floating"]))
-        
         gt_foot_disp = float(np.nanmean(self.gt_h36m_data["overall"]["mean_stance_displacement"]))
         gen_foot_disp = float(np.nanmean(gen_h36m_data["overall"]["mean_stance_displacement"]))
 
         # 8. Log Everything to Weights & Biases
         wandb_logs = {
-            # Physical Realism Curves & Constant Baselines
             "physical_realism/floating_gen": gen_floating,
             "physical_realism/floating_gt": gt_floating,
             "physical_realism/floating_error_abs": abs(gen_floating - gt_floating),
@@ -253,14 +265,12 @@ class WandBEvaluationCallback(Callback):
             "physical_realism/foot_displacement_gt": gt_foot_disp,
             "physical_realism/foot_displacement_error_abs": abs(gen_foot_disp - gt_foot_disp),
             
-            # Kinematic & Distributional Discrepancy
             "eval_metrics/Overall_MPJAE_rad": smpl_summary.get("Overall", {}).get("Overall", 0.0),
             "eval_metrics/Mean_Hellinger_H36M": float(h36m_dist_df["Hellinger"].mean()),
             "eval_metrics/Mean_KS_H36M": float(h36m_dist_df["KS_Stat"].mean()),
             "eval_metrics/Mean_Hellinger_SMPL": float(smpl_dist_df["Hellinger"].mean()),
             "eval_metrics/Mean_KS_SMPL": float(smpl_dist_df["KS_Stat"].mean()),
             
-            # Visual Distribution Snapshots
             "eval_visuals/H36M_Summary_Card": wandb.Image(str(self.vis_dir / "gen_00_dataset_summary.png")),
             "eval_visuals/H36M_Features_Violin": wandb.Image(str(self.vis_dir / "gen_02_pd_features_summary.png")),
             "eval_visuals/SMPL_Arm_Swing_SI": wandb.Image(str(self.vis_dir / "03c_smpl_arm_swing_distributions.png")),
@@ -272,7 +282,5 @@ class WandBEvaluationCallback(Callback):
 
         trainer.logger.experiment.log(wandb_logs, step=trainer.global_step)
         
-        # Cleanup temporary image/gif files
         for f in self.vis_dir.glob("*.png"): f.unlink()
         for f in self.vis_dir.glob("*.gif"): f.unlink()
-        print(f"[W&B Callback] Logged Epoch {epoch} metrics and visuals to W&B.")

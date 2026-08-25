@@ -22,6 +22,16 @@ class H36MEvaluator:
         # Major bones for bone-length checks (pelvis - hips - knees - ankles)
         self.major_bones = [(0,1), (1,2), (2,3), (0,4), (4,5), (5,6)]
 
+        self.metric_keys = [
+            "sequence_length", "mean_bone_length_variance", "floating", 
+            "mean_stance_displacement", "mean_step_length", "mean_step_asymmetry", 
+            "mean_walking_speed", "max_ankle_clearance", 
+            "mean_emos", "variance_emos"
+        ]
+        self.nan_metrics = self.metric_keys.copy()
+        self.nan_metrics.remove("bone_length_variance")
+        self.nan_metrics.remove("sequence_length")
+
         # heel strike detection params
         self.MIN_FRAMES_BETWEEN_STEPS = 1
 
@@ -185,17 +195,9 @@ class H36MEvaluator:
         # Heel Strike Detection
         peaks_info = self.detect_heel_stikes(seq)
         
-        # Return NaNs if no proper walking pattern in motion sequence
-        nan_metrics = [
-            "floating", "mean_stance_displacement",  
-            "mean_step_length", "mean_step_asymmetry",
-            "mean_walking_speed", "max_ankle_clearance",
-            "mean_emos", "variance_emos"
-        ]
-        
         if len(peaks_info) < 2:
             print(f"  Warning: Sequence '{clip_id}' too short or no heel strikes detected (T={T}, peaks={len(peaks_info)}). Returning NaN metrics.")
-            for m in nan_metrics: metrics[m] = np.nan
+            for m in self.nan_metrics: metrics[m] = np.nan
             metrics["heel_strikes_info"] = []
             return metrics
 
@@ -297,48 +299,43 @@ class H36MEvaluator:
 
         return metrics
 
-    def process_dataset(self, filepath, labels_path):
-        """Extracts metrics for all sequences."""
-        print(f"\nProcessing dataset: {filepath}")
-        with open(labels_path, "r") as f:
-            key_to_severity = json.load(f)["key_to_severity"]
-            
-        data = self._load_dataset(filepath)
-        grouped_sequences = self._get_severity_class_subsets(data, key_to_severity)
+    def evaluate_from_memory(self, data_dict, key_to_severity):
+        """Extracts metrics from a dictionary of sequences in memory."""
+        grouped_sequences = self._get_severity_class_subsets(data_dict, key_to_severity)
 
-        metric_keys = [
-            "sequence_length", "mean_bone_length_variance", "floating", 
-            "mean_stance_displacement", "mean_step_length", "mean_step_asymmetry", 
-            "mean_walking_speed", "max_ankle_clearance", 
-            "mean_emos", "variance_emos"
-        ]
-
-        distributions = {"overall": {k: [] for k in metric_keys}}
+        distributions = {"overall": {k: [] for k in self.metric_keys}}
         for severity in grouped_sequences.keys():
-            distributions[severity] = {k: [] for k in metric_keys}
+            distributions[severity] = {k: [] for k in self.metric_keys}
 
         heel_strikes_registry = {}
 
         for severity, seq_list in grouped_sequences.items():
             for clip_id, seq in seq_list:
                 metrics = self._extract_sequence_metrics(seq, clip_id)
-                
-                # Separate out the heel strike logging data from the distributions
                 heel_strikes_registry[clip_id] = metrics.pop("heel_strikes_info", [])
                 
                 if not np.isnan(metrics["mean_walking_speed"]):
-                    for k in metric_keys:
+                    for k in self.metric_keys:
                         distributions[severity][k].append(metrics[k])
                         distributions["overall"][k].append(metrics[k])
                         
         for group in distributions.keys():
-            for k in metric_keys:
+            for k in self.metric_keys:
                 distributions[group][k] = np.array(distributions[group][k])
                 
         return distributions, heel_strikes_registry
 
+    def process_dataset(self, filepath, labels_path):
+        """Extracts metrics for all sequences from a disk file."""
+        print(f"\nProcessing dataset: {filepath}")
+        with open(labels_path, "r") as f:
+            key_to_severity = json.load(f)["key_to_severity"]
+            
+        data = self._load_dataset(filepath)
+        return self.evaluate_from_memory(data, key_to_severity)
+
     def evaluate_and_cache(self, npz_path, labels_path, cache_output_path, synthetic=False):
-        """Process and save the raw distributions and heel strike markers."""
+        """Process and save the raw distributions and heel strike markers to disk."""
         distributions, heel_strikes_registry = self.process_dataset(npz_path, labels_path)
         
         out_path = Path(cache_output_path)

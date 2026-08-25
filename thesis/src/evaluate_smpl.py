@@ -284,25 +284,15 @@ class SMPLEvaluator:
                 
         return sparc_vals
 
-    def evaluate_and_cache(self, gt_npz_path, gen_npz_path, labels_path, cache_output_path, verbose=True, plot_sparc_joint=None):
-        """Loads unified GT/Gen 6D datasets, computes MPJAE for all categories/joints, caches result."""
-        with open(labels_path, 'r') as f:
-            labels = json.load(f)["key_to_severity"]
-
-        gt_data = np.load(gt_npz_path, allow_pickle=True)
-        gen_data = np.load(gen_npz_path, allow_pickle=True)
-        
-        gt_data = gt_data['arr_0'].item() if 'arr_0' in gt_data.files else {k: gt_data[k] for k in gt_data.files}
-        gen_data = gen_data['arr_0'].item() if 'arr_0' in gen_data.files else {k: gen_data[k] for k in gen_data.files}
-
+    def evaluate_from_memory(self, gt_data, gen_data, labels, verbose=True, plot_sparc_joint=None):
+        """Computes metrics from 6D pose dictionaries in memory."""
         common_keys = [k for k in gt_data.keys() if k in gen_data.keys() and not k.endswith('_trans')]
         
         if not common_keys:
             if verbose:
                 print("Error: No matching pose sequences found between GT and Gen datasets.")
-            return None
+            return None, None
 
-        # structure: results[severity_class][metric_name] = [list of sequence errors]
         results = defaultdict(lambda: defaultdict(list))
         per_sequence_results = {}
         misaligned_records = []
@@ -422,29 +412,6 @@ class SMPLEvaluator:
                 }
             }
 
-        if verbose:
-            print(f"\n--- SMPL SO(3) Evaluation ---")
-            print(f"Evaluated {len(common_keys)} matching sequences.")
-            print("\nOverall Category Means (radians):")
-            for group_name in self.JOINT_GROUPS.keys():
-                mean_val = np.mean(results["Overall"][group_name])
-                print(f"  -> {group_name:<20}: {mean_val:.6f} rad")
-
-            print("\nSPARC Smoothness Summary:")
-            print(f"  -> {'GT SPARC Overall':<20}: {np.mean(results['Overall']['GT_SPARC_Overall']):.4f} | {'Gen SPARC Overall':<20}: {np.mean(results['Overall']['Gen_SPARC_Overall']):.4f}")
-
-            print("\nArm Swing & Asymmetry Summary (radians):")
-            print(f"  -> {'GT L_ROM':<20}: {np.mean(results['Overall']['GT_ROM_L']):.4f} rad | {'Gen L_ROM':<20}: {np.mean(results['Overall']['Gen_ROM_L']):.4f} rad")
-            print(f"  -> {'GT R_ROM':<20}: {np.mean(results['Overall']['GT_ROM_R']):.4f} rad | {'Gen R_ROM':<20}: {np.mean(results['Overall']['Gen_ROM_R']):.4f} rad")
-            print(f"  -> {'GT Symmetry Index':<20}: {np.mean(results['Overall']['GT_Symmetry_Index']):.4f} % | {'Gen Symmetry Index':<20}: {np.mean(results['Overall']['Gen_Symmetry_Index']):.4f} %")
-            print(f"  -> {'Symmetry Index Error':<20}: {np.mean(results['Overall']['Symmetry_Index_Error']):.4f} %")
-
-            print(f"\nArm Swing SO(3) Validation Alignment Report:")
-            print(f"  -> Total swing cycles evaluated: {total_cycles_count}")
-            print(f"  -> Misaligned cycles (frame_aligned == False): {misaligned_count} ({(misaligned_count / total_cycles_count * 100) if total_cycles_count > 0 else 0.0:.2f}%)")
-            if misaligned_count > 0:
-                print(f"  -> Logged {len(misaligned_records)} misaligned cycle entries.")
-        
         # Build summary means dictionary
         summary_results = {}
         for cls_key, metrics_dict in results.items():
@@ -453,10 +420,6 @@ class SMPLEvaluator:
                 for metric_name, vals in metrics_dict.items()
             }
                 
-        # Store results
-        out_path = Path(cache_output_path)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        
         cache_data = {
             "summary_means": summary_results,
             "raw_distributions": {
@@ -470,12 +433,26 @@ class SMPLEvaluator:
                 "misaligned_records": misaligned_records
             }
         }
+            
+        return summary_results, cache_data
+
+    def evaluate_and_cache(self, gt_npz_path, gen_npz_path, labels_path, cache_output_path, plot_sparc_joint=None):
+        """Loads unified GT/Gen 6D datasets from disk, computes MPJAE, caches result."""
+        with open(labels_path, 'r') as f:
+            labels = json.load(f)["key_to_severity"]
+
+        gt_data = np.load(gt_npz_path, allow_pickle=True)
+        gen_data = np.load(gen_npz_path, allow_pickle=True)
         
+        gt_data = gt_data['arr_0'].item() if 'arr_0' in gt_data.files else {k: gt_data[k] for k in gt_data.files}
+        gen_data = gen_data['arr_0'].item() if 'arr_0' in gen_data.files else {k: gen_data[k] for k in gen_data.files}
+        
+        summary_results, cache_data = self.evaluate_from_memory(gt_data, gen_data, labels, plot_sparc_joint)
+                
+        out_path = Path(cache_output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         with open(out_path, 'w') as f:
             json.dump(cache_data, f, indent=4)
-            
-        if verbose:
-            print(f"\nSaved detailed MPJAE evaluation results to: {out_path}")
             
         return summary_results
 

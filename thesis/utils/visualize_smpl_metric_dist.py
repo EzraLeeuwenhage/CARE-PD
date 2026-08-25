@@ -10,11 +10,12 @@ from pathlib import Path
 from thesis.src.evaluate_distributions import DistributionComparator
 
 
-def plot_smpl_mpjae(json_path, output_dir):
+def plot_smpl_mpjae(data, output_dir):
     """Plots SMPL MPJAE by category and by individual joint in degrees."""
-    with open(json_path, 'r') as f:
-        data = json.load(f)
-
+    if isinstance(data, (str, Path)):
+        with open(data, 'r') as f:
+            data = json.load(f)
+            
     raw_dist = data.get("raw_distributions", {})
     if not raw_dist or "Overall" not in raw_dist:
         print("No valid SMPL distributions found in JSON.")
@@ -150,11 +151,12 @@ def plot_smpl_mpjae(json_path, output_dir):
         print(f"Saved 24-Joint ranked breakdown plot to: {joint_plot_path}")
 
 
-def plot_arm_swing_metrics(json_path, output_dir, distances_df=None):
+def plot_arm_swing_metrics(data, output_dir, distances_df=None):
     """Plots violin distributions for Arm Swing Asymmetry with optional distance balloons."""
-    with open(json_path, 'r') as f:
-        data = json.load(f)
-
+    if isinstance(data, (str, Path)):
+        with open(data, 'r') as f:
+            data = json.load(f)
+            
     raw_dist = data.get("raw_distributions", {})
     if not raw_dist or "Overall" not in raw_dist or "GT_Symmetry_Index" not in raw_dist["Overall"]:
         print("No Arm Swing metrics found in JSON. Skipping arm swing plot.")
@@ -238,11 +240,12 @@ def plot_arm_swing_metrics(json_path, output_dir, distances_df=None):
     print(f"Saved Arm Swing distributions plot to: {arm_plot_path}")
 
 
-def plot_sparc_metrics(json_path, output_dir, distances_df=None):
+def plot_sparc_metrics(data, output_dir, distances_df=None):
     """Plots full side-by-side distributions for SPARC smoothness metrics with optional distance balloons."""
-    with open(json_path, 'r') as f:
-        data = json.load(f)
-
+    if isinstance(data, (str, Path)):
+        with open(data, 'r') as f:
+            data = json.load(f)
+            
     raw_dist = data.get("raw_distributions", {})
     if not raw_dist or "Overall" not in raw_dist or "GT_SPARC_Overall" not in raw_dist["Overall"]:
         print("No SPARC metrics found in JSON. Skipping SPARC plots.")
