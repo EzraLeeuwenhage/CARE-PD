@@ -201,7 +201,7 @@ def plot_arm_swing_metrics(data, output_dir, distances_df=None):
         order=cls_order,
         ax=ax,
         palette=palette,
-        bw_adjust=0.4
+        bw_adjust=0.2
     )
     
     ax.set_title(f"{metric_name} Distribution: Ground Truth vs Generated", fontsize=15, fontweight='bold')

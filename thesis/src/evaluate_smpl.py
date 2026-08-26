@@ -170,7 +170,11 @@ class SMPLEvaluator:
                 "rel_error": float(amplitude_error)
             })
             
-        mean_rom = np.mean(amplitudes_pca) if amplitudes_pca else 0.0
+        if amplitudes_pca:
+            mean_rom = np.mean(amplitudes_pca)
+        else:
+            # if no proper swing cycles, fallback to max-min of the 1D projection
+            mean_rom = float(np.max(swing_1d) - np.min(swing_1d))
         return mean_rom, cycle_validations
 
     def compute_arm_swing_asymmetry(self, seq_6d, prominence=0.05):
@@ -477,8 +481,7 @@ if __name__ == "__main__":
         gen_npz_path=str(gen_path),
         labels_path=str(labels_path),
         cache_output_path=str(output_path),
-        verbose=True,
-        plot_sparc_joint='R_Shoulder'
+        # plot_sparc_joint='R_Shoulder'
     )
 
     print("\nSMPL SO(3) Evaluation Complete!")
