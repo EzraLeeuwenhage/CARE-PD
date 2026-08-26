@@ -156,7 +156,7 @@ def evaluate_pipeline(paths):
         smpl_json = json.load(f)
         
     gt_comp, gen_comp = defaultdict(dict), defaultdict(dict)
-    target_sparc_joints = ['L_Hip', 'R_Hip', 'L_Knee', 'R_Knee', 'L_Ankle', 'R_Ankle']
+    target_sparc_joints = ['L_Knee', 'R_Knee']
     
     for sev_key, metrics in smpl_json.get("raw_distributions", {}).items():
         c_key = "overall" if sev_key == "Overall" else sev_key.replace("Class ", "")
@@ -164,12 +164,12 @@ def evaluate_pipeline(paths):
         gt_comp[c_key]["Swing Asymmetry (SI)"] = np.array(metrics.get("GT_Symmetry_Index", []))
         gen_comp[c_key]["Swing Asymmetry (SI)"] = np.array(metrics.get("Gen_Symmetry_Index", []))
         
-        gt_legs, gen_legs = [], []
+        gt_knees, gen_knees = [], []
         for j in target_sparc_joints:
-            gt_legs.extend(metrics.get(f"GT_SPARC_{j}", []))
-            gen_legs.extend(metrics.get(f"Gen_SPARC_{j}", []))
-        gt_comp[c_key]["SPARC_Lower_Limbs"] = np.array(gt_legs)
-        gen_comp[c_key]["SPARC_Lower_Limbs"] = np.array(gen_legs)
+            gt_knees.extend(metrics.get(f"GT_SPARC_{j}", []))
+            gen_knees.extend(metrics.get(f"Gen_SPARC_{j}", []))
+        gt_comp[c_key]["SPARC_Knees"] = np.array(gt_knees)
+        gen_comp[c_key]["SPARC_Knees"] = np.array(gen_knees)
         
     smpl_dist_df = comparator._format_results_to_dataframe(comparator.compare(gt_comp, gen_comp))
     

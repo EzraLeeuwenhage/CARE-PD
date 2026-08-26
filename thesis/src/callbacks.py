@@ -201,7 +201,7 @@ class WandBEvaluationCallback(Callback):
 
         # SMPL Distribution Distances & Plots
         gt_comp, gen_comp = defaultdict(dict), defaultdict(dict)
-        target_sparc_joints = ['L_Hip', 'R_Hip', 'L_Knee', 'R_Knee', 'L_Ankle', 'R_Ankle']
+        target_sparc_joints = ['L_Knee', 'R_Knee']
         
         for sev_key, metrics in smpl_cache_data.get("raw_distributions", {}).items():
             c_key = "overall" if sev_key == "Overall" else sev_key.replace("Class ", "")
@@ -209,12 +209,12 @@ class WandBEvaluationCallback(Callback):
             gt_comp[c_key]["Swing Asymmetry (SI)"] = np.array(metrics.get("GT_Symmetry_Index", []))
             gen_comp[c_key]["Swing Asymmetry (SI)"] = np.array(metrics.get("Gen_Symmetry_Index", []))
             
-            gt_legs, gen_legs = [], []
+            gt_knees, gen_knees = [], []
             for j in target_sparc_joints:
-                gt_legs.extend(metrics.get(f"GT_SPARC_{j}", []))
-                gen_legs.extend(metrics.get(f"Gen_SPARC_{j}", []))
-            gt_comp[c_key]["SPARC_Lower_Limbs"] = np.array(gt_legs)
-            gen_comp[c_key]["SPARC_Lower_Limbs"] = np.array(gen_legs)
+                gt_knees.extend(metrics.get(f"GT_SPARC_{j}", []))
+                gen_knees.extend(metrics.get(f"Gen_SPARC_{j}", []))
+            gt_comp[c_key]["SPARC_Knees"] = np.array(gt_knees)
+            gen_comp[c_key]["SPARC_Knees"] = np.array(gen_knees)
             
         smpl_dist_df = self.comparator._format_results_to_dataframe(self.comparator.compare(gt_comp, gen_comp))
 
@@ -254,13 +254,12 @@ class WandBEvaluationCallback(Callback):
             render_three_way_gif(seq_gt, seq_prior, seq_gen, sev_val, gif_path, elev=20, azim=45, roll=135, gen_severity=gen_sev_val)
             gif_paths.append(gif_path)
 
-        # Extract Physical Realism Scalar Baselines
+        # Log all metrics, distances, and visuals to W&B
         gt_floating = float(np.nanmean(self.gt_h36m_data["overall"]["floating"]))
         gen_floating = float(np.nanmean(gen_h36m_data["overall"]["floating"]))
         gt_foot_disp = float(np.nanmean(self.gt_h36m_data["overall"]["mean_stance_displacement"]))
         gen_foot_disp = float(np.nanmean(gen_h36m_data["overall"]["mean_stance_displacement"]))
 
-        # Log Everything to Weights & Biases
         wandb_logs = {
             "physical_realism/floating_gen": gen_floating,
             "physical_realism/floating_gt": gt_floating,
@@ -275,15 +274,30 @@ class WandBEvaluationCallback(Callback):
             "eval_metrics/Mean_KS_H36M": float(h36m_dist_df["KS_Stat"].mean()),
             "eval_metrics/Mean_Hellinger_SMPL": float(smpl_dist_df["Hellinger"].mean()),
             "eval_metrics/Mean_KS_SMPL": float(smpl_dist_df["KS_Stat"].mean()),
-            
-            "eval_visuals/H36M_Summary_Card": wandb.Image(str(self.vis_dir / "gen_00_dataset_summary.png")),
-            "eval_visuals/H36M_Features_Violin": wandb.Image(str(self.vis_dir / "gen_02_pd_features_summary.png")),
-            "eval_visuals/SMPL_Arm_Swing_SI": wandb.Image(str(self.vis_dir / "03c_smpl_arm_swing_distributions.png")),
-            "eval_visuals/SMPL_SPARC_Smoothness": wandb.Image(str(self.vis_dir / "03d_sparc_categories.png")),
         }
         
         for gif_path in gif_paths:
             wandb_logs[f"eval_videos/{gif_path.stem}"] = wandb.Video(str(gif_path), format="gif")
+
+        visual_artifacts = {
+            "eval_visuals/H36M_Summary_Card": "gen_00_dataset_summary.png",
+            "eval_visuals/H36M_Features_Violin": "gen_02_pd_features_summary.png",
+            "eval_visuals/H36M_Ankle_Clearance": "02b_max_ankle_clearance_comparison_plot.png",
+            "eval_visuals/H36M_eMoS": "02b_mean_emos_comparison_plot.png",
+            "eval_visuals/H36M_Step_Length": "02b_mean_step_length_comparison_plot.png",
+            "eval_visuals/H36M_Walking_Speed": "02b_mean_walking_speed_comparison_plot.png",
+            "eval_visuals/SMPL_MPJAE_Categories": "03a_smpl_mpjae_categories.png",
+            "eval_visuals/SMPL_MPJAE_All_Joints": "03b_smpl_mpjae_all_24_joints.png",
+            "eval_visuals/SMPL_Arm_Swing_SI": "03c_smpl_arm_swing_distributions.png",
+            "eval_visuals/SMPL_SPARC_Categories": "03d_sparc_categories.png",
+            "eval_visuals/SMPL_SPARC_All_Joints": "03e_sparc_all_24_joints.png",
+            "eval_visuals/SMPL_SPARC_Knee_Discriminators": "03f_sparc_knee_class_discriminators.png",
+        }
+
+        for log_name, filename in visual_artifacts.items():
+            img_path = self.vis_dir / filename
+            if img_path.exists():
+                wandb_logs[log_name] = wandb.Image(str(img_path))
 
         trainer.logger.experiment.log(wandb_logs, step=trainer.global_step)
         

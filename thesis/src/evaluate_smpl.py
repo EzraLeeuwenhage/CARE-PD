@@ -32,7 +32,7 @@ class SMPLEvaluator:
             'Right Body': [2, 5, 8, 11, 14, 17, 19, 21, 23]
         }
 
-        self.HARD_JOINTS = [0, 1, 2, 3, 4, 5, 7, 8, 16, 17, 18, 19]
+        self.HARD_MPJAE_JOINTS = [0, 1, 2, 3, 4, 5, 7, 8, 16, 17, 18, 19]
 
     # ---------
     # MPJAE
@@ -104,7 +104,7 @@ class SMPLEvaluator:
         
         if not return_per_joint:
             # Compute mean error over 12 hardest joints to learn
-            return torch.mean(d_geo[..., self.HARD_JOINTS]).item()
+            return torch.mean(d_geo[..., self.HARD_MPJAE_JOINTS]).item()
             
         # Collapse all leading dimensions EXCEPT the last joint dimension (dim=-1)
         dims_to_collapse = tuple(range(d_geo.dim() - 1))
@@ -382,7 +382,7 @@ class SMPLEvaluator:
 
             per_sequence_results[k] = {
                 "severity": sev,
-                "overall_mpjae": float(np.mean(per_joint_err[self.HARD_JOINTS])),
+                "overall_mpjae": float(np.mean(per_joint_err[self.HARD_MPJAE_JOINTS])),
                 "per_joint_mpjae": {j_name: float(per_joint_err[i]) for i, j_name in enumerate(self.JOINT_NAMES)},
                 "sparc": {
                     "gt": {

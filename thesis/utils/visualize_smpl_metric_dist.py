@@ -138,7 +138,7 @@ def plot_smpl_mpjae(data, output_dir):
             label=f"Overall Mean: {overall_mean:.2f}°"
         )
 
-        plt.title("Error Breakdown across all 24 SMPL Joints (Ranked by Median Error)", fontsize=14, fontweight='bold', pad=12)
+        plt.title("MPJAE across all 24 SMPL Joints (Ordered by Median Error)", fontsize=14, fontweight='bold', pad=12)
         plt.xlabel("Angular Error (degrees)")
         plt.ylabel("")
         plt.legend(loc="upper right")
@@ -148,7 +148,7 @@ def plot_smpl_mpjae(data, output_dir):
         joint_plot_path = out_dir / "03b_smpl_mpjae_all_24_joints.png"
         plt.savefig(joint_plot_path, dpi=300)
         plt.close()
-        print(f"Saved 24-Joint ranked breakdown plot to: {joint_plot_path}")
+        print(f"Saved 24-Joint ordered breakdown plot to: {joint_plot_path}")
 
 
 def plot_arm_swing_metrics(data, output_dir, distances_df=None):
@@ -260,24 +260,96 @@ def plot_sparc_metrics(data, output_dir, distances_df=None):
         if score < 0.20: return '#ffe680' # Yellow
         if score < 0.40: return '#ffb366' # Orange
         return '#ff6666' # Red
+    
+    palette = {"Ground Truth": "lightsteelblue", "Generated": "lightcoral"}
 
+    # ---------------------------------------------------------
+    # KNEE JOINTS FOR SEVERITY CLASS PROGRESSION
+    # ---------------------------------------------------------
+    knee_joints = ['L_Knee', 'R_Knee']
+    knee_records = []
+    
+    for cls_key, metrics_dict in raw_dist.items():
+        if cls_key == "Overall":
+            continue
+        for j_name in knee_joints:
+            for val in metrics_dict.get(f"GT_SPARC_{j_name}", []):
+                knee_records.append({"Severity Class": cls_key, "Joint": j_name, "Source": "Ground Truth", "SPARC": val})
+            for val in metrics_dict.get(f"Gen_SPARC_{j_name}", []):
+                knee_records.append({"Severity Class": cls_key, "Joint": j_name, "Source": "Generated", "SPARC": val})
+                
+    if knee_records:
+        df_knees = pd.DataFrame(knee_records)
+        cls_order = sorted(df_knees["Severity Class"].unique())
+        
+        # Create two fully independent subplots
+        fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+        
+        for idx, j_name in enumerate(knee_joints):
+            ax = axes[idx]
+            # Isolate data for this specific joint
+            df_joint = df_knees[df_knees["Joint"] == j_name]
+            
+            sns.boxplot(
+                data=df_joint, 
+                x="Severity Class", 
+                y="SPARC", 
+                hue="Source", 
+                palette=palette,
+                order=cls_order,
+                ax=ax,
+                showfliers=True
+            )
+            
+            ax.set_title(f"{j_name} Joint", fontsize=14, fontweight='bold', pad=10)
+            ax.set_ylabel("SPARC Value (Higher = Smoother)", fontsize=12)
+            ax.set_xlabel("")
+            ax.tick_params(axis='x', labelsize=11)
+            
+            # Add distance balloons dynamically scaled to plot
+            if distances_df is not None:
+                y_max = df_joint["SPARC"].max()
+                y_min = df_joint["SPARC"].min()
+                y_range = y_max - y_min
+                
+                # Pad top by 25% and bottom by 5% to ensure balloons and fliers fit
+                ax.set_ylim(y_min - (y_range * 0.05), y_max + (y_range * 0.25))
+                
+                x_ticks = [l.get_text() for l in ax.get_xticklabels()]
+                for x_idx, label_text in enumerate(x_ticks):
+                    match = distances_df[(distances_df['Severity'] == label_text) & (distances_df['Metric'] == 'SPARC_Knees')]
+                    if not match.empty:
+                        ks = match.iloc[0]['KS_Stat']
+                        h = match.iloc[0]['Hellinger']
+                        worst_score = max(ks, h)
+                        ax.text(x_idx, y_max + (y_range * 0.05), f"K: {ks:.2f}\nH: {h:.2f}",
+                                ha='center', va='bottom', fontsize=10, fontweight='bold',
+                                bbox=dict(facecolor=get_color(worst_score), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
+            
+            if idx == 0:
+                ax.get_legend().remove()
+            else:
+                ax.legend(title="Data Source", fontsize=11, title_fontsize=12, 
+                          bbox_to_anchor=(1.03, 0.5), loc='center left', borderaxespad=0.)
+
+        fig.suptitle("SPARC Smoothness in Knees per Severity Class", 
+                     fontsize=16, fontweight='bold', y=1.02)
+        
+        plt.tight_layout()
+        knee_plot_path = out_dir / "03f_sparc_knee_class_discriminators.png"
+        plt.savefig(knee_plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"Saved independent Knee Discriminators box plots to: {knee_plot_path}")
+
+    # --------------------------------------------
+    # BROAD CATEGORIES & SEVERITY CLASSES FOR SPARC
+    # --------------------------------------------
     categories = [
         'Overall', 'Lower Body', 'Upper Body', 'Hips', 
         'Knees', 'Ankles', 'Shoulders', 
         'Left Body', 'Right Body'
     ]
-    all_joints = [
-        'Pelvis', 'L_Hip', 'R_Hip', 'Spine1', 'L_Knee', 'R_Knee',
-        'Spine2', 'L_Ankle', 'R_Ankle', 'Spine3', 'L_Foot', 'R_Foot',
-        'Neck', 'L_Collar', 'R_Collar', 'Head', 'L_Shoulder', 'R_Shoulder',
-        'L_Elbow', 'R_Elbow', 'L_Wrist', 'R_Wrist', 'L_Hand', 'R_Hand'
-    ]
     
-    palette = {"Ground Truth": "lightsteelblue", "Generated": "lightcoral"}
-
-    # --------------------------------------------
-    # BROAD CATEGORIES & SEVERITY CLASSES FOR SPARC
-    # --------------------------------------------
     cat_records = []
     for cls_key, metrics_dict in raw_dist.items():
         for cat_name in categories:
@@ -301,7 +373,8 @@ def plot_sparc_metrics(data, output_dir, distances_df=None):
             ax=axes[0], 
             order=categories,
             inner="quartile", 
-            palette=palette
+            palette=palette,
+            cut=0
         )
         axes[0].set_title("SPARC Smoothness by Body Region (Overall Dataset)", fontsize=13, fontweight='bold')
         axes[0].set_ylabel("SPARC Value (Higher = Smoother)")
@@ -334,7 +407,8 @@ def plot_sparc_metrics(data, output_dir, distances_df=None):
             inner="quartile",
             ax=axes[1],
             order=cls_order, 
-            palette=palette
+            palette=palette,
+            cut=0
         )
         axes[1].set_title("Primary Walking Joints (Hips/Knees/Ankles) Across Severity", fontsize=13, fontweight='bold')
         axes[1].set_ylabel("SPARC Value (Higher = Smoother)")
@@ -372,6 +446,13 @@ def plot_sparc_metrics(data, output_dir, distances_df=None):
     # -----------------------------
     # 24 INDIVIDUAL JOINTS FOR SPARC
     # -----------------------------
+    all_joints = [
+        'Pelvis', 'L_Hip', 'R_Hip', 'Spine1', 'L_Knee', 'R_Knee',
+        'Spine2', 'L_Ankle', 'R_Ankle', 'Spine3', 'L_Foot', 'R_Foot',
+        'Neck', 'L_Collar', 'R_Collar', 'Head', 'L_Shoulder', 'R_Shoulder',
+        'L_Elbow', 'R_Elbow', 'L_Wrist', 'R_Wrist', 'L_Hand', 'R_Hand'
+    ]
+    
     joint_records = []
     overall_metrics = raw_dist.get("Overall", {})
     for joint_name in all_joints:
@@ -397,7 +478,7 @@ def plot_sparc_metrics(data, output_dir, distances_df=None):
             showfliers=False
         )
 
-        plt.title("Smoothness Breakdown across all 24 SMPL Joints (Ranked by GT Smoothness)", fontsize=14, fontweight='bold', pad=12)
+        plt.title("SPARC Smoothness across all 24 SMPL Joints (Ordered by GT smoothness)", fontsize=14, fontweight='bold', pad=12)
         plt.xlabel("SPARC Value (Higher = Smoother)")
         plt.ylabel("")
         plt.legend(title="Data Source", loc="lower right")
@@ -411,7 +492,7 @@ def plot_sparc_metrics(data, output_dir, distances_df=None):
 
 
 if __name__ == "__main__":
-    model_folder = "ConditionalModel-MLP-Baseline"
+    model_folder = "JointModel-MLP-Baseline"
     base_dir = f"thesis/data/processed/{model_folder}/evaluation"
     
     parser = argparse.ArgumentParser()
