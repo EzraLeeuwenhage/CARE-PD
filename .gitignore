@@ -28,6 +28,7 @@ thesis/data/processed/*
 
 zip_code.py
 J_regressor_h36m_correct.npy
+smpl_faces.npy
 
 # ignore script for syncing code to gitlab repository
 sync_to_gitlab.bat
