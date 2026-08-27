@@ -1,6 +1,6 @@
 model:
-  name: "JointModel-MLP-Baseline"
-  is_joint_model: true
+  name: "Cond-MLP-Baseline"
+  is_joint_model: false
   hidden_dim: 1024
   class_embed_dim: 64
   time_embed_dim: 64
@@ -39,7 +39,6 @@ training:
 
 sampling:
   num_steps: 20
-  force_joint_conditioning: false   # If true, use MGM-Cond (force fixed severity score)
 
 paths:
   weights_dir: "thesis/data/checkpoints"
