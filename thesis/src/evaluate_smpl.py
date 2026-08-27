@@ -288,14 +288,9 @@ class SMPLEvaluator:
                 
         return sparc_vals
 
-    def evaluate_from_memory(self, gt_data, gen_data, labels, verbose=True, plot_sparc_joint=None):
+    def evaluate_from_memory(self, gt_data, gen_data, labels, plot_sparc_joint=None):
         """Computes metrics from 6D pose dictionaries in memory."""
         common_keys = [k for k in gt_data.keys() if k in gen_data.keys() and not k.endswith('_trans')]
-        
-        if not common_keys:
-            if verbose:
-                print("Error: No matching pose sequences found between GT and Gen datasets.")
-            return None, None
 
         results = defaultdict(lambda: defaultdict(list))
         per_sequence_results = {}
