@@ -74,6 +74,12 @@ class WandBEvaluationCallback(Callback):
         self.cache_dir = Path(cfg['paths']['output_dir']) / "wandb_eval_cache"
         self.vis_dir = self.cache_dir / "visualizations"
         self.vis_dir.mkdir(parents=True, exist_ok=True)
+
+        self.val_epochs = []
+        self.floating_gen_hist = []
+        self.floating_gt_hist = []
+        self.foot_disp_gen_hist = []
+        self.foot_disp_gt_hist = []
         
         self.anchors = {}
         self.gt_6d_dict = None
@@ -249,7 +255,7 @@ class WandBEvaluationCallback(Callback):
             seq_gen = forward_6d_to_h36m(gen_full_pose, gen_full_trans, self.smpl_model, self.h36m_regressor, pl_module.device)
             
             gif_path = self.vis_dir / f"anchor_class_{sev_val}_epoch_{epoch}.gif"
-            render_three_way_gif(seq_gt, seq_prior, seq_gen, sev_val, gif_path, elev=20, azim=45, roll=135, gen_severity=gen_sev_val)
+            render_three_way_gif(seq_gt, seq_prior, seq_gen, sev_val, gif_path, elev=55, azim=55, roll=135, gen_severity=gen_sev_val)
             gif_paths.append(gif_path)
 
         # Log all metrics, distances, and visuals to W&B
@@ -258,13 +264,29 @@ class WandBEvaluationCallback(Callback):
         gt_foot_disp = float(np.nanmean(self.gt_h36m_data["overall"]["mean_stance_displacement"]))
         gen_foot_disp = float(np.nanmean(gen_h36m_data["overall"]["mean_stance_displacement"]))
 
+        self.val_epochs.append(epoch)
+        self.floating_gen_hist.append(gen_floating)
+        self.floating_gt_hist.append(gt_floating)
+        self.foot_disp_gen_hist.append(gen_foot_disp)
+        self.foot_disp_gt_hist.append(gt_foot_disp)
+
+        # Log everything in W&B
         wandb_logs = {
-            "physical_realism/floating_gen": gen_floating,
-            "physical_realism/floating_gt": gt_floating,
+            "physical_realism/floating_tracking": wandb.plot.line_series(
+                xs=self.val_epochs,
+                ys=[self.floating_gen_hist, self.floating_gt_hist],
+                keys=["Generated", "Ground Truth Baseline"],
+                title="Floating / Skating over Epochs",
+                xname="Epoch"
+            ),
+            "physical_realism/foot_displacement_tracking": wandb.plot.line_series(
+                xs=self.val_epochs,
+                ys=[self.foot_disp_gen_hist, self.foot_disp_gt_hist],
+                keys=["Generated", "Ground Truth Baseline"],
+                title="Foot Displacement over Epochs",
+                xname="Epoch"
+            ),
             "physical_realism/floating_error_abs": abs(gen_floating - gt_floating),
-            
-            "physical_realism/foot_displacement_gen": gen_foot_disp,
-            "physical_realism/foot_displacement_gt": gt_foot_disp,
             "physical_realism/foot_displacement_error_abs": abs(gen_foot_disp - gt_foot_disp),
             
             "eval_metrics/Overall_MPJAE_rad": smpl_summary.get("Overall", {}).get("Overall", 0.0),
