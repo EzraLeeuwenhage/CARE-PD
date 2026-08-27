@@ -70,7 +70,6 @@ class WandBEvaluationCallback(Callback):
         self.cfg = cfg
         self.eval_interval = eval_interval
         self.is_joint_model = cfg['model'].get('is_joint_model', False)
-        self.force_joint_cond = cfg['sampling'].get('force_joint_conditioning', False)
         
         self.cache_dir = Path(cfg['paths']['output_dir']) / "wandb_eval_cache"
         self.vis_dir = self.cache_dir / "visualizations"
@@ -142,7 +141,6 @@ class WandBEvaluationCallback(Callback):
             max_batches=self.cfg['training'].get('eval_batches', -1),
             desc=f"W&B Eval Ep {epoch}", 
             is_joint_model=self.is_joint_model,
-            force_joint_conditioning=self.force_joint_cond
         )
 
         # Convert 6D to H36M and SMPL

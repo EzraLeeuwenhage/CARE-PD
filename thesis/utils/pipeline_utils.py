@@ -130,7 +130,6 @@ def evaluate_pipeline(paths):
         gen_npz_path=paths["gen_6d"],
         labels_path=paths["gen_labels"],
         cache_output_path=str(smpl_eval_path),
-        verbose=True
     )
 
     print("\nGenerating and saving Final Test Set visualizations...")

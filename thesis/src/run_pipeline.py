@@ -24,7 +24,6 @@ CONFIG_PATH = "thesis/configs/baseline.yaml"
 if __name__ == "__main__":
     cfg = load_config(CONFIG_PATH)
     is_joint_model = cfg['model'].get('is_joint_model', False)
-    force_joint_cond = cfg['sampling'].get('force_joint_conditioning', False)
     model_name = cfg['model'].get('name', 'GenerativeModel')
     print(f"\nStarting model train-test pipeline for '{model_name}' (Joint Model: {is_joint_model})...")
 
@@ -103,7 +102,6 @@ if __name__ == "__main__":
         max_batches=-1,
         desc="Generating Final Test Set", 
         is_joint_model=is_joint_model,
-        force_joint_conditioning=force_joint_cond
     )
 
     if is_joint_model:

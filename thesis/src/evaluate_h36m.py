@@ -29,7 +29,7 @@ class H36MEvaluator:
             "mean_emos", "variance_emos"
         ]
         self.nan_metrics = self.metric_keys.copy()
-        self.nan_metrics.remove("bone_length_variance")
+        self.nan_metrics.remove("mean_bone_length_variance")
         self.nan_metrics.remove("sequence_length")
 
         # heel strike detection params
