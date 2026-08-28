@@ -23,11 +23,13 @@ def generate_trajectories(model, dataloader, num_steps, device, max_batches=-1, 
                           is_joint_model=False, force_joint_conditioning=False):
     """Generates synthetic dataset using model and dataloader."""
     model.eval()
-    
+
+    num_classes = model.cfg['model'].get('num_classes', 4)
     all_gt_pose, all_gt_trans = [], []
     all_gen_pose, all_gen_trans = [], []
     all_gt_severities = []
     all_gen_severities = []
+    all_prior_severities = []
     
     for i, (prefix, target, severity) in enumerate(tqdm(dataloader, desc=desc, leave=False)):
         if max_batches > 0 and i >= int(max_batches):
@@ -36,6 +38,7 @@ def generate_trajectories(model, dataloader, num_steps, device, max_batches=-1, 
         prefix = {k: v.to(device) for k, v in prefix.items()}
         target = {k: v.to(device) for k, v in target.items()}
         severity = severity.to(device)
+        batch_size = severity.shape[0]
         
         gt_pose = torch.cat([prefix['pose'], target['pose']], dim=1).cpu()
         gt_trans = torch.cat([prefix['trans'], target['trans']], dim=1).cpu()
@@ -46,17 +49,22 @@ def generate_trajectories(model, dataloader, num_steps, device, max_batches=-1, 
         x_0 = generate_prior_from_prefix(prefix, target)
 
         # Handle conditional, joint (MGM-Joint), and forced joint (MGM-Cond) generation
-        if is_joint_model:
-            if force_joint_conditioning:
-                # MGM-Cond: Force the severity score to match the ground truth prefix
-                gen_suffix, gen_severity = model.generate_suffix(prefix, x_0, severity_score=severity, 
-                                                                 num_steps=num_steps)
-            else:
-                # MGM-Joint: Let the model predict its own severity score via jump process
-                gen_suffix, gen_severity = model.generate_suffix(prefix, x_0, severity_score=None, num_steps=num_steps)
+        if is_joint_model and force_joint_conditioning:
+            # MGM-Cond: Force the severity score to match the ground truth prefix
+            all_prior_severities.extend(severity.cpu().tolist())
+            gen_suffix, gen_severity = model.generate_suffix(prefix, x_0, severity_score=severity, 
+                                                                num_steps=num_steps)
+            all_gen_severities.extend(gen_severity.cpu().tolist())
+        elif is_joint_model and not force_joint_conditioning:
+            # MGM-Joint: Let the model predict its own severity score via jump process
+            y_0 = torch.randint(0, num_classes, (batch_size,), device=device)
+            all_prior_severities.extend(y_0.cpu().tolist())
+            gen_suffix, gen_severity = model.generate_suffix(prefix, x_0, severity_score=None, 
+                                                                num_steps=num_steps, y_0=y_0)
             all_gen_severities.extend(gen_severity.cpu().tolist())
         else:
             # CFM-Cond: Standard conditional model
+            all_prior_severities.extend(severity.cpu().tolist())
             gen_suffix = model.generate_suffix(prefix, x_0, severity_score=severity, num_steps=num_steps)
             all_gen_severities.extend(severity.cpu().tolist())            
         
@@ -69,5 +77,6 @@ def generate_trajectories(model, dataloader, num_steps, device, max_batches=-1, 
         "gt": {"pose": torch.cat(all_gt_pose, dim=0), "trans": torch.cat(all_gt_trans, dim=0)},
         "gen": {"pose": torch.cat(all_gen_pose, dim=0), "trans": torch.cat(all_gen_trans, dim=0)},
         "severities": all_gt_severities,
-        "gen_severities": all_gen_severities
+        "gen_severities": all_gen_severities,
+        "prior_severities": all_prior_severities
     }

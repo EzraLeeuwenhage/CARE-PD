@@ -1,8 +1,8 @@
-import json
 import numpy as np
 from pathlib import Path
 from collections import defaultdict
 import random
+import time
 
 import torch
 import wandb
@@ -74,6 +74,7 @@ class WandBEvaluationCallback(Callback):
         self.cache_dir = Path(cfg['paths']['output_dir']) / "wandb_eval_cache"
         self.vis_dir = self.cache_dir / "visualizations"
         self.vis_dir.mkdir(parents=True, exist_ok=True)
+        self.gt_plots_logged = False
 
         self.val_epochs = []
         self.floating_gen_hist = []
@@ -133,12 +134,15 @@ class WandBEvaluationCallback(Callback):
         if trainer.sanity_checking or epoch % self.eval_interval != 0:
             return
 
+        val_start_time = time.time()
+
         print(f"\n--- [W&B Callback] Running Validation (Epoch {epoch}) ---")
         val_loader = trainer.val_dataloaders
         if isinstance(val_loader, list):
             val_loader = val_loader[0]
 
         # Generate Synthetic Suffixes
+        gen_start = time.time()
         data_dict = generate_trajectories(
             model=pl_module, 
             dataloader=val_loader, 
@@ -148,6 +152,7 @@ class WandBEvaluationCallback(Callback):
             desc=f"W&B Eval Ep {epoch}", 
             is_joint_model=self.is_joint_model,
         )
+        print(f"  [Time] Trajectory Generation: {time.time() - gen_start:.2f}s")
 
         # Convert 6D to H36M and SMPL
         self.smpl_model = self.smpl_model.to(pl_module.device)
@@ -157,10 +162,17 @@ class WandBEvaluationCallback(Callback):
         gen_sevs_list = data_dict["gen_severities"] if self.is_joint_model else data_dict["severities"]
 
         # Only compute GT metrics once and cache in memory for future validation epochs
+        conv_start = time.time()
         if self.gt_6d_dict is None:
             self.gt_6d_dict, self.gt_h36m_dict, self.gt_key_to_severity = {}, {}, {}
 
-            gt_h36m_all = batched_6d_to_h36m(data_dict["gt"]["pose"], data_dict["gt"]["trans"], pl_module.device)
+            gt_h36m_all = batched_6d_to_h36m(
+                data_dict["gt"]["pose"], 
+                data_dict["gt"]["trans"],
+                self.smpl_model,
+                self.h36m_regressor, 
+                pl_module.device
+            )
 
             for i, gt_sev in enumerate(data_dict["severities"]):
                 seq_key = f"seq_{i:03d}"
@@ -172,7 +184,13 @@ class WandBEvaluationCallback(Callback):
             # Extract GT metrics once and hold in memory forever
             self.gt_h36m_data, _ = self.h36m_evaluator.evaluate_from_memory(self.gt_h36m_dict, self.gt_key_to_severity)
 
-        gen_h36m_all = batched_6d_to_h36m(data_dict["gen"]["pose"], data_dict["gen"]["trans"], pl_module.device)
+        gen_h36m_all = batched_6d_to_h36m(
+            data_dict["gen"]["pose"], 
+            data_dict["gen"]["trans"],
+            self.smpl_model,
+            self.h36m_regressor,  
+            pl_module.device
+        )
 
         for i, gen_sev in enumerate(gen_sevs_list):
             seq_key = f"seq_{i:03d}"
@@ -181,7 +199,10 @@ class WandBEvaluationCallback(Callback):
             gen_6d_dict[f"{seq_key}_trans"] = data_dict["gen"]["trans"][i].cpu().numpy()
             gen_h36m_dict[seq_key] = gen_h36m_all[i]
 
-        # Extract Generated Metrics        
+        print(f"  [Time] SMPL to H36M Batch Conversion: {time.time() - conv_start:.2f}s")
+
+        # Extract Generated Metrics 
+        metric_start = time.time()       
         smpl_summary, smpl_cache_data = self.smpl_evaluator.evaluate_from_memory(
             self.gt_6d_dict, gen_6d_dict, self.gt_key_to_severity
         )
@@ -194,12 +215,19 @@ class WandBEvaluationCallback(Callback):
 
             h36m_results = self.comparator.compare(self.gt_h36m_data, gen_h36m_data)
             h36m_dist_df = self.comparator._format_results_to_dataframe(h36m_results)
+
+            # only plot ground-truth data plots a single time
+            if not self.gt_plots_logged:                
+                gt_df = prepare_dataframe(self.gt_h36m_data)
+                plot_dataset_summary_stats(gt_df, self.vis_dir, prefix="gt_", dataset_label="Ground Truth Baseline")
+                plot_pd_feature_violins(gt_df, self.vis_dir, prefix="gt_", dataset_label="Ground Truth Baseline")
+                self.gt_plots_logged = True
             
-            gen_df = prepare_dataframe(gen_h36m_data)
+            gen_df = prepare_dataframe(gen_h36m_data)            
+            plot_dataset_summary_stats(gen_df, self.vis_dir, prefix="gen_", dataset_label=f"Generated (Epoch {epoch})")
+            plot_pd_feature_violins(gen_df, self.vis_dir, prefix="gen_", dataset_label=f"Generated (Epoch {epoch})")
+
             combined_df = prepare_combined_dataframe(self.gt_h36m_data, gen_h36m_data)
-            
-            plot_dataset_summary_stats(gen_df, self.vis_dir, prefix="gen_")
-            plot_pd_feature_violins(gen_df, self.vis_dir, prefix="gen_")
             plot_pd_feature_comparison_plots(combined_df, h36m_dist_df, self.vis_dir)
 
             # SMPL Distribution Distances & Plots
@@ -224,8 +252,11 @@ class WandBEvaluationCallback(Callback):
             plot_smpl_mpjae(smpl_cache_data, self.vis_dir)
             plot_arm_swing_metrics(smpl_cache_data, self.vis_dir, distances_df=smpl_dist_df)
             plot_sparc_metrics(smpl_cache_data, self.vis_dir, distances_df=smpl_dist_df)
+        
+        print(f"  [Time] Metric Extraction & Plots: {time.time() - metric_start:.2f}s")
 
         # Render Side-by-Side Anchor GIFs (Prior vs Generated Suffix)
+        gif_start = time.time()
         gif_paths = []
         for sev_val, anchor_data in self.anchors.items():
             if self.is_joint_model:
@@ -259,10 +290,27 @@ class WandBEvaluationCallback(Callback):
             render_three_way_gif(seq_gt, seq_prior, seq_gen, sev_val, gif_path, elev=55, azim=55, roll=135, gen_severity=gen_sev_val)
             gif_paths.append(gif_path)
 
+        print(f"  [Time] Anchor GIF Rendering: {time.time() - gif_start:.2f}s")
+
         # Standard wandb logs
         wandb_logs = {
             "eval_metrics/Overall_MPJAE_rad": smpl_summary.get("Overall", {}).get("Overall", 0.0)
         }
+
+        if self.is_joint_model:
+            wandb_logs["eval_metrics/Label_Confusion_Matrix"] = wandb.plot.confusion_matrix(
+                probs=None,
+                y_true=data_dict["severities"],
+                preds=data_dict["gen_severities"],
+                class_names=["Class 0", "Class 1", "Class 2", "Class 3"]
+            )
+            
+            wandb_logs["eval_metrics/Prior_State_Correlation_Matrix"] = wandb.plot.confusion_matrix(
+                probs=None,
+                y_true=data_dict["prior_severities"],
+                preds=data_dict["gen_severities"],
+                class_names=["Class 0", "Class 1", "Class 2", "Class 3"]
+            )
         
         for gif_path in gif_paths:
             wandb_logs[f"eval_videos/{gif_path.stem}"] = wandb.Video(str(gif_path), format="gif")
@@ -304,9 +352,11 @@ class WandBEvaluationCallback(Callback):
                 "eval_metrics/Mean_KS_SMPL": float(smpl_dist_df["KS_Stat"].mean()),
             })
 
-            visual_artifacts = {
-                "eval_visuals/H36M_Summary_Card": "gen_00_dataset_summary.png",
-                "eval_visuals/H36M_Features_Violin": "gen_02_pd_features_summary.png",
+            visuals = {
+                "eval_visuals/H36M_Summary_Card_GEN": "gen_00_dataset_summary.png",
+                "eval_visuals/H36M_Summary_Card_GT": "gt_00_dataset_summary.png",
+                "eval_visuals/H36M_Features_Violin_GEN": "gen_02_pd_features_summary.png",
+                "eval_visuals/H36M_Features_Violin_GT": "gt_02_pd_features_summary.png",
                 "eval_visuals/H36M_Ankle_Clearance": "02b_max_ankle_clearance_comparison_plot.png",
                 "eval_visuals/H36M_eMoS": "02b_mean_emos_comparison_plot.png",
                 "eval_visuals/H36M_Step_Length": "02b_mean_step_length_comparison_plot.png",
@@ -319,7 +369,7 @@ class WandBEvaluationCallback(Callback):
                 "eval_visuals/SMPL_SPARC_Knee_Discriminators": "03f_sparc_knee_class_discriminators.png",
             }
 
-            for log_name, filename in visual_artifacts.items():
+            for log_name, filename in visuals.items():
                 img_path = self.vis_dir / filename
                 if img_path.exists():
                     wandb_logs[log_name] = wandb.Image(str(img_path))
@@ -328,3 +378,5 @@ class WandBEvaluationCallback(Callback):
         
         for f in self.vis_dir.glob("*.png"): f.unlink()
         for f in self.vis_dir.glob("*.gif"): f.unlink()
+
+        print(f"  [Time] TOTAL Validation Routine: {time.time() - val_start_time:.2f}s\n")

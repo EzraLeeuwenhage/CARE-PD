@@ -126,7 +126,7 @@ if __name__ == "__main__":
         paths = format_and_convert(data_dict, cfg, is_joint_model=is_joint_model)
 
         print("\n--- PHASE 4: EVALUATION ---")
-        evaluate_pipeline(paths)
+        evaluate_pipeline(paths, is_joint_model=is_joint_model)
     else: 
         print("[OVERFIT MODE] Skipping Test Generation and Evaluation.")
 

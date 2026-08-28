@@ -307,7 +307,7 @@ class JointBaselineModel(ConditionalBaselineModel):
         
         return u_theta, Q_theta
 
-    def generate_suffix(self, prefix_dict, x_0_dict, severity_score=None, num_steps=100):
+    def generate_suffix(self, prefix_dict, x_0_dict, severity_score=None, y_0=None, num_steps=100):
         """Iteratively solves continuous Euler ODE for motion x_tau AND discrete 
         CTMC Jump Process for label y_tau over timesteps tau.
         """
@@ -321,7 +321,8 @@ class JointBaselineModel(ConditionalBaselineModel):
             y_tau = severity_score.clone()
             sample_labels = False
         else:
-            y_tau = torch.randint(0, num_classes, (batch_size,), device=self.device)
+            y_tau = y_0.clone() if y_0 is not None \
+                else torch.randint(0, num_classes, (batch_size,), device=self.device)
             sample_labels = True
 
         for step in range(num_steps):

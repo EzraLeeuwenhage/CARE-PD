@@ -5,6 +5,9 @@ import yaml
 import torch
 from collections import defaultdict
 from smplx.lbs import vertices2joints
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 from thesis.utils.sixD2smpl import build_smpl_pkl_from_6d_smpl, convert_6d_to_smpl
 from thesis.src.care_pd.smpl2h36m import convert_smpl_to_h36m
@@ -105,11 +108,12 @@ def format_and_convert(data_dict, cfg, is_joint_model=False):
     return {
         "gt_6d": gt_6d_npz, "gen_6d": gen_6d_npz, "gt_h36m": gt_h36m,
         "gen_h36m": gen_h36m, "gt_labels": gt_labels_path,
-        "gen_labels": gen_labels_path, "out_dir": out_dir
+        "gen_labels": gen_labels_path, "out_dir": out_dir,
+        "prior_severities": data_dict.get("prior_severities", [])
     }
 
 
-def evaluate_pipeline(paths):
+def evaluate_pipeline(paths, is_joint_model=False):
     evaluator = H36MEvaluator(fps=30)
     gt_h36m_data = evaluator.evaluate_and_cache(
         npz_path=str(paths["gt_h36m"]),
@@ -142,13 +146,48 @@ def evaluate_pipeline(paths):
     # H36M Distribution Plots
     h36m_results = comparator.compare(gt_h36m_data, gen_h36m_data)
     h36m_dist_df = comparator._format_results_to_dataframe(h36m_results)
-    
+
+    gt_df = prepare_dataframe(gt_h36m_data)
     gen_df = prepare_dataframe(gen_h36m_data)
     combined_df = prepare_combined_dataframe(gt_h36m_data, gen_h36m_data)
     
-    plot_dataset_summary_stats(gen_df, vis_out_dir, prefix="gen_", dataset_label="Final Test Set")
-    plot_pd_feature_violins(gen_df, vis_out_dir, prefix="gen_", dataset_label="Final Test Set")
+    plot_dataset_summary_stats(gt_df, vis_out_dir, prefix="gt_", dataset_label="Ground Truth Baseline")
+    plot_pd_feature_violins(gt_df, vis_out_dir, prefix="gt_", dataset_label="Ground Truth Baseline")
+    
+    plot_dataset_summary_stats(gen_df, vis_out_dir, prefix="gen_", dataset_label="Final Test Set (Generated)")
+    plot_pd_feature_violins(gen_df, vis_out_dir, prefix="gen_", dataset_label="Final Test Set (Generated)")
+    
     plot_pd_feature_comparison_plots(combined_df, h36m_dist_df, vis_out_dir)
+
+    if is_joint_model:
+        with open(paths["gt_labels"], 'r') as f:
+            gt_lbls = json.load(f)["key_to_severity"]
+        with open(paths["gen_labels"], 'r') as f:
+            gen_lbls = json.load(f)["key_to_severity"]
+            
+        y_true = [v for k, v in gt_lbls.items() if k.startswith("seq_")]
+        y_pred = [v for k, v in gen_lbls.items() if k.startswith("seq_")]
+        
+        cm = confusion_matrix(y_true, y_pred, labels=[0, 1, 2, 3])
+        plt.figure(figsize=(6, 5))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=[0, 1, 2, 3], yticklabels=[0, 1, 2, 3])
+        plt.title('Joint Model Label Confusion Matrix')
+        plt.xlabel('Predicted Severity Class')
+        plt.ylabel('Ground Truth Severity Class')
+        plt.tight_layout()
+        plt.savefig(vis_out_dir / "label_confusion_matrix.png", dpi=300)
+        plt.close()
+
+        prior_sevs = paths.get("prior_severities", None)
+        cm_prior = confusion_matrix(prior_sevs, y_pred, labels=[0, 1, 2, 3])
+        plt.figure(figsize=(6, 5))
+        sns.heatmap(cm_prior, annot=True, fmt='d', cmap='Oranges', xticklabels=[0, 1, 2, 3], yticklabels=[0, 1, 2, 3])
+        plt.title('Joint Model: Prior State vs Predicted Label Correlation')
+        plt.xlabel('Predicted Final Severity Class')
+        plt.ylabel('Random Prior (t=0) Severity Class')
+        plt.tight_layout()
+        plt.savefig(vis_out_dir / "prior_state_correlation_matrix.png", dpi=300)
+        plt.close()
     
     # SMPL Distribution Plots
     with open(smpl_eval_path, 'r') as f:
@@ -222,7 +261,7 @@ def forward_6d_to_h36m(pose_6d, trans, smpl_model, h36m_regressor, device):
     return h36m_joints.cpu().numpy()
 
 
-def batched_6d_to_h36m(pose_6d, trans, smpl_model, h36m_regressor, device, chunk_size=128):
+def batched_6d_to_h36m(pose_6d, trans, smpl_model, h36m_regressor, device, chunk_size=256):
     """Processes (Batch, Time, Joints, 6) tensors efficiently in GPU chunks."""
     N, T, J, _ = pose_6d.shape
     out_h36m = np.zeros((N, T, 17, 3), dtype=np.float32)
