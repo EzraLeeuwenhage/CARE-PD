@@ -288,8 +288,32 @@ class SMPLEvaluator:
                 
         return sparc_vals
 
+    def _process_single_sequence(self, k, gt_seq, gen_seq, sev, plot_sparc_joint):
+        """Helper method for parallelized metric computations."""
+        per_joint_err = self.compute_mpjae(gt_seq, gen_seq, return_per_joint=True) # (24,)
+        
+        sparc_gt = self.compute_sparc_for_sequence(gt_seq, plot_joint=plot_sparc_joint, plot_prefix="GT")
+        sparc_gen = self.compute_sparc_for_sequence(gen_seq, plot_joint=plot_sparc_joint, plot_prefix="Gen")
+
+        rom_L_gt, rom_R_gt, si_asym_gt, val_L_gt, val_R_gt = self.compute_arm_swing_asymmetry(gt_seq, prominence=0.05)
+        rom_L_gen, rom_R_gen, si_asym_gen, val_L_gen, val_R_gen = self.compute_arm_swing_asymmetry(gen_seq, prominence=0.05)
+
+        return {
+            "key": k,
+            "sev": sev,
+            "per_joint_err": per_joint_err,
+            "sparc_gt": sparc_gt,
+            "sparc_gen": sparc_gen,
+            "rom_L_gt": rom_L_gt, "rom_R_gt": rom_R_gt, "si_asym_gt": si_asym_gt, 
+            "val_L_gt": val_L_gt, "val_R_gt": val_R_gt,
+            "rom_L_gen": rom_L_gen, "rom_R_gen": rom_R_gen, "si_asym_gen": si_asym_gen, 
+            "val_L_gen": val_L_gen, "val_R_gen": val_R_gen,
+        }
+
     def evaluate_from_memory(self, gt_data, gen_data, labels, plot_sparc_joint=None):
         """Computes metrics from 6D pose dictionaries in memory."""
+        from joblib import Parallel, delayed
+        
         common_keys = [k for k in gt_data.keys() if k in gen_data.keys() and not k.endswith('_trans')]
 
         results = defaultdict(lambda: defaultdict(list))
@@ -297,20 +321,28 @@ class SMPLEvaluator:
         misaligned_records = []
         total_cycles_count = 0
         misaligned_count = 0
-        has_plotted_sparc = False
         
+        tasks = []
+        has_plotted_sparc = False
         for k in common_keys:
-            per_joint_err = self.compute_mpjae(gt_data[k], gen_data[k], return_per_joint=True) # (24,)
             sev = labels.get(k, "Unknown")
-            
             plot_this_iter = plot_sparc_joint if not has_plotted_sparc else None
-            
-            # SPARC evaluation
-            sparc_gt = self.compute_sparc_for_sequence(gt_data[k], plot_joint=plot_this_iter, plot_prefix="GT")
-            sparc_gen = self.compute_sparc_for_sequence(gen_data[k], plot_joint=plot_this_iter, plot_prefix="Gen")
             if plot_this_iter:
                 has_plotted_sparc = True
-
+            tasks.append((k, gt_data[k], gen_data[k], sev, plot_this_iter))
+            
+        print(f"  [SMPLEvaluator] Processing {len(tasks)} sequences in parallel...")
+        extracted_data = Parallel(n_jobs=-1)(
+            delayed(self._process_single_sequence)(*t) for t in tasks
+        )
+        
+        for res in extracted_data:
+            k = res["key"]
+            sev = res["sev"]
+            per_joint_err = res["per_joint_err"]
+            sparc_gt = res["sparc_gt"]
+            sparc_gen = res["sparc_gen"]
+            
             # broad category errors & SPARC
             for group_name, joint_indices in self.JOINT_GROUPS.items():
                 group_val = float(np.mean(per_joint_err[joint_indices]))
@@ -341,17 +373,14 @@ class SMPLEvaluator:
                     results[f"Class {sev}"][f"GT_SPARC_{joint_name}"].append(s_gt_val)
                     results[f"Class {sev}"][f"Gen_SPARC_{joint_name}"].append(s_gen_val)
 
-            rom_L_gt, rom_R_gt, si_asym_gt, val_L_gt, val_R_gt = self.compute_arm_swing_asymmetry(gt_data[k], prominence=0.05)
-            rom_L_gen, rom_R_gen, si_asym_gen, val_L_gen, val_R_gen = self.compute_arm_swing_asymmetry(gen_data[k], prominence=0.05)
-
             arm_metrics = {
-                "GT_ROM_L": float(rom_L_gt),
-                "GT_ROM_R": float(rom_R_gt),
-                "GT_Symmetry_Index": float(si_asym_gt),
-                "Gen_ROM_L": float(rom_L_gen),
-                "Gen_ROM_R": float(rom_R_gen),
-                "Gen_Symmetry_Index": float(si_asym_gen),
-                "Symmetry_Index_Error": float(abs(si_asym_gt - si_asym_gen))
+                "GT_ROM_L": float(res["rom_L_gt"]),
+                "GT_ROM_R": float(res["rom_R_gt"]),
+                "GT_Symmetry_Index": float(res["si_asym_gt"]),
+                "Gen_ROM_L": float(res["rom_L_gen"]),
+                "Gen_ROM_R": float(res["rom_R_gen"]),
+                "Gen_Symmetry_Index": float(res["si_asym_gen"]),
+                "Symmetry_Index_Error": float(abs(res["si_asym_gt"] - res["si_asym_gen"]))
             }
 
             for metric_name, val in arm_metrics.items():
@@ -360,10 +389,10 @@ class SMPLEvaluator:
                     results[f"Class {sev}"][metric_name].append(val)
 
             for split_name, side_name, val_list in [
-                ("GT", "L", val_L_gt),
-                ("GT", "R", val_R_gt),
-                ("Gen", "L", val_L_gen),
-                ("Gen", "R", val_R_gen)
+                ("GT", "L", res["val_L_gt"]),
+                ("GT", "R", res["val_R_gt"]),
+                ("Gen", "L", res["val_L_gen"]),
+                ("Gen", "R", res["val_R_gen"])
             ]:
                 for cycle in val_list:
                     total_cycles_count += 1
@@ -395,18 +424,18 @@ class SMPLEvaluator:
                 },
                 "arm_swing": {
                     "gt": {
-                        "rom_L": float(rom_L_gt),
-                        "rom_R": float(rom_R_gt),
-                        "symmetry_index": float(si_asym_gt),
-                        "cycles_L": val_L_gt,
-                        "cycles_R": val_R_gt
+                        "rom_L": float(res["rom_L_gt"]),
+                        "rom_R": float(res["rom_R_gt"]),
+                        "symmetry_index": float(res["si_asym_gt"]),
+                        "cycles_L": res["val_L_gt"],
+                        "cycles_R": res["val_R_gt"]
                     },
                     "gen": {
-                        "rom_L": float(rom_L_gen),
-                        "rom_R": float(rom_R_gen),
-                        "symmetry_index": float(si_asym_gen),
-                        "cycles_L": val_L_gen,
-                        "cycles_R": val_R_gen
+                        "rom_L": float(res["rom_L_gen"]),
+                        "rom_R": float(res["rom_R_gen"]),
+                        "symmetry_index": float(res["si_asym_gen"]),
+                        "cycles_L": res["val_L_gen"],
+                        "cycles_R": res["val_R_gen"]
                     }
                 }
             }

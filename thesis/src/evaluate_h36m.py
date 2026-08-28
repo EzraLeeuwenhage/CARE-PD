@@ -301,6 +301,8 @@ class H36MEvaluator:
 
     def evaluate_from_memory(self, data_dict, key_to_severity):
         """Extracts metrics from a dictionary of sequences in memory."""
+        from joblib import Parallel, delayed
+
         grouped_sequences = self._get_severity_class_subsets(data_dict, key_to_severity)
 
         distributions = {"overall": {k: [] for k in self.metric_keys}}
@@ -309,16 +311,24 @@ class H36MEvaluator:
 
         heel_strikes_registry = {}
 
+        tasks = []
         for severity, seq_list in grouped_sequences.items():
             for clip_id, seq in seq_list:
-                metrics = self._extract_sequence_metrics(seq, clip_id)
-                heel_strikes_registry[clip_id] = metrics.pop("heel_strikes_info", [])
+                tasks.append((severity, clip_id, seq))
                 
-                if not np.isnan(metrics["mean_walking_speed"]):
-                    for k in self.metric_keys:
-                        distributions[severity][k].append(metrics[k])
-                        distributions["overall"][k].append(metrics[k])
-                        
+        print(f"  [H36MEvaluator] Processing {len(tasks)} sequences in parallel...")
+        results = Parallel(n_jobs=-1)(
+            delayed(self._extract_sequence_metrics)(seq, clip_id) for _, clip_id, seq in tasks
+        )
+
+        for (severity, clip_id, _), metrics in zip(tasks, results):
+            heel_strikes_registry[clip_id] = metrics.pop("heel_strikes_info", [])
+            
+            if not np.isnan(metrics["mean_walking_speed"]):
+                for k in self.metric_keys:
+                    distributions[severity][k].append(metrics[k])
+                    distributions["overall"][k].append(metrics[k])
+                    
         for group in distributions.keys():
             for k in self.metric_keys:
                 distributions[group][k] = np.array(distributions[group][k])
