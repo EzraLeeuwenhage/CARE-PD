@@ -113,8 +113,8 @@ def format_and_convert(data_dict, cfg, is_joint_model=False):
     }
 
 
-def evaluate_pipeline(paths, is_joint_model=False):
-    evaluator = H36MEvaluator(fps=30)
+def evaluate_pipeline(paths, is_joint_model=False, min_z_travel=0.5):
+    evaluator = H36MEvaluator(fps=30, min_z_travel=min_z_travel)
     gt_h36m_data = evaluator.evaluate_and_cache(
         npz_path=str(paths["gt_h36m"]),
         labels_path=str(paths["gt_labels"]),

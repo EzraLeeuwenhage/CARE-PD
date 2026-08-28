@@ -23,6 +23,7 @@ CONFIG_PATH = "thesis/configs/overfit.yaml"
 if __name__ == "__main__":
     cfg = load_config(CONFIG_PATH)
     is_joint_model = cfg['model'].get('is_joint_model', False)
+    min_z_travel = cfg['windowing'].get('min_z_travel', 0.5)
     overfit_severity_class = cfg['training'].get('overfit_severity_class', -1)
     model_name = cfg['model'].get('name', 'GenerativeModel')
 
@@ -52,17 +53,17 @@ if __name__ == "__main__":
     model = model_class(cfg)
     
     log_interval = cfg['training'].get('log_interval', 5)
-    eval_interval = cfg['training'].get('val_interval', 10)
-    wandb_eval_interval = cfg['training'].get('wandb_eval_interval', 50)
+    val_interval = cfg['training'].get('val_interval', 10)
+    wandb_val_interval = cfg['training'].get('wandb_eval_interval', 50)
 
     print_callback = EpochAndValPrintCallback(
         train_interval=log_interval, 
-        val_interval=eval_interval
+        val_interval=val_interval
     )
     
     wandb_eval_callback = WandBEvaluationCallback(
         cfg=cfg, 
-        eval_interval=wandb_eval_interval
+        eval_interval=wandb_val_interval
     )
     
     checkpoint_callback = ModelCheckpoint(
@@ -81,7 +82,7 @@ if __name__ == "__main__":
         precision="16-mixed",
         accelerator="auto",
         devices=1,
-        check_val_every_n_epoch=eval_interval,
+        check_val_every_n_epoch=val_interval,
     )
 
     print("\n--- PHASE 1: TRAINING ---")
@@ -126,7 +127,7 @@ if __name__ == "__main__":
         paths = format_and_convert(data_dict, cfg, is_joint_model=is_joint_model)
 
         print("\n--- PHASE 4: EVALUATION ---")
-        evaluate_pipeline(paths, is_joint_model=is_joint_model)
+        evaluate_pipeline(paths, is_joint_model=is_joint_model, min_z_travel=min_z_travel)
     else: 
         print("[OVERFIT MODE] Skipping Test Generation and Evaluation.")
 

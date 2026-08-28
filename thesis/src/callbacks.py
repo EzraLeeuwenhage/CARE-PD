@@ -87,7 +87,9 @@ class WandBEvaluationCallback(Callback):
         self.gt_h36m_dict = None
         self.gt_key_to_severity = None
         self.gt_h36m_data = None
-        self.h36m_evaluator = H36MEvaluator(fps=30)
+
+        min_z_travel = cfg['windowing'].get('min_z_travel', 0.5)
+        self.h36m_evaluator = H36MEvaluator(fps=30, min_z_travel=min_z_travel)
         self.smpl_evaluator = SMPLEvaluator(fps=30)
         self.comparator = DistributionComparator()
 

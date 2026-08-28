@@ -7,8 +7,9 @@ from pathlib import Path
 
 
 class H36MEvaluator:
-    def __init__(self, fps=30):
+    def __init__(self, fps=30, min_z_travel=0.0):
         self.fps = fps
+        self.min_z_travel = min_z_travel
         # Human3.6M standard joint indices
         self.PELVIS = 0
         self.R_ANKLE = 3
@@ -182,6 +183,13 @@ class H36MEvaluator:
 
         T = seq.shape[0]
         metrics = {"sequence_length": T}
+
+        # Return NaNs for sequences with no forward movement (in severity class 3)
+        z_travel = abs(seq[-1, self.PELVIS, 2] - seq[0, self.PELVIS, 2])
+        if z_travel < self.min_z_travel:
+            for m in self.nan_metrics: metrics[m] = np.nan
+            metrics["heel_strikes_info"] = []
+            return metrics
 
         # ---------------------------------------------------------
         # PHYSICAL REALISM

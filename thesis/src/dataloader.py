@@ -21,6 +21,7 @@ class SMPL6DDataset(Dataset):
         
         # Extract minimum z travel setting with a fallback default of 0.0
         self.min_z_travel = self.cfg['windowing'].get('min_z_travel', 0.0)
+        self.filter_z_travel = self.cfg['windowing'].get('filter_z_travel', True)
         
         # Determine split percentages
         eval_split = self.cfg['training'].get('eval_split', 0.1)
@@ -89,7 +90,7 @@ class SMPL6DDataset(Dataset):
                 end_z = self.trans_data[key][end_idx - 1, 2]
                 z_travel = abs(end_z - start_z)
                 
-                if z_travel >= self.min_z_travel:
+                if not self.filter_z_travel or z_travel >= self.min_z_travel:
                     self.window_indices.append((key, start_idx))
                     chunk_counts[sev] += 1
                 
@@ -151,7 +152,8 @@ class SMPL6DDataset(Dataset):
                 end_idx = start_idx + self.window_size
                 start_z = self.trans_data[key][start_idx, 2]
                 end_z = self.trans_data[key][end_idx - 1, 2]
-                if abs(end_z - start_z) >= self.min_z_travel:
+
+                if not self.filter_z_travel or abs(end_z - start_z) >= self.min_z_travel:
                     has_valid_chunk = True
                     break
                     
