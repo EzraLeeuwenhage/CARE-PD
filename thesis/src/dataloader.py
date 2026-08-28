@@ -3,8 +3,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from collections import defaultdict
-
-from thesis.src.generate_prior import generate_prior_from_prefix
+import random
 
 
 class SMPL6DDataset(Dataset):
@@ -218,40 +217,61 @@ class JointSMPL6DDataset(SMPL6DDataset):
         super().__init__(cfg, mode=mode)
         self.num_classes = num_classes
 
-    def __getitem__(self, idx):
-        prefix, target, y_target = super().__getitem__(idx)
 
-        # Sample FM time tau from uniform distribution [0, 1]
-        tau = torch.rand(1)
+class OverfitSMPL6DDataset(SMPL6DDataset):
+    """Sanity check dataset that artificially repeats a single randomly selected sequence of a specific class."""
+    def __init__(self, cfg, mode='train'):
+        super().__init__(cfg, mode='train')
 
-        # Continuous Flow part (linear interpolation)
-        # Add temporary batch dimension for prior generation function
-        prefix_b = {k: v.unsqueeze(0) for k, v in prefix.items()}
-        target_b = {k: v.unsqueeze(0) for k, v in target.items()}
-        x_0_b = generate_prior_from_prefix(prefix_b, target_b)
-        x_0 = {k: v.squeeze(0) for k, v in x_0_b.items()}
+        target_sev = cfg['training'].get('overfit_severity_class', 0)
+        
+        valid_chunks = []
+        for window in self.window_indices:
+            key = window[0]
+            base_key = key.split('_down')[0] if '_down' in key else key
+            if self.key_to_severity.get(base_key, 0) == target_sev:
+                valid_chunks.append(window)
+                
+        if not valid_chunks:
+            raise ValueError(f"No valid sequence chunks found for severity class {target_sev}")
 
-        t_pose = tau.view(1, 1, 1)
-        t_trans = tau.view(1, 1)
+        seed = cfg['training'].get('overfit_seed', 42)
+        rng = random.Random(seed)
+        single_window = rng.choice(valid_chunks)
 
-        x_tau = {
-            'pose': (1.0 - t_pose) * x_0['pose'] + t_pose * target['pose'],
-            'trans': (1.0 - t_trans) * x_0['trans'] + t_trans * target['trans']
-        }
+        dummy_epoch_size = cfg['training']['batch_size'] * 10
+        self.window_indices = [single_window] * dummy_epoch_size
+        
+        print(f"\n[OVERFIT MODE] Locked to chunk -> {single_window[0]} (Start: {single_window[1]}) \
+              | Class: {target_sev} | Seed: {seed}")
+        
 
-        u_target = {
-            'pose': target['pose'] - x_0['pose'],
-            'trans': target['trans'] - x_0['trans']
-        }
-
-        # Discrete CTMC Jump part (jump mixture path)
-        # With probability tau, y_tau = y_target, else draw y_tau from Uni({0, 1, 2, 3})
-        if torch.rand(1).item() < tau.item():
-            y_tau = y_target.clone()
-        else:
-            y_tau = torch.randint(0, self.num_classes, (1,)).squeeze(0)
-
-        return prefix, x_tau, y_tau, u_target, y_target, tau
+class JointOverfitSMPL6DDataset(JointSMPL6DDataset):
+    """Sanity check dataset for Joint Models."""
+    def __init__(self, cfg, mode='train', num_classes=4):
+        super().__init__(cfg, mode='train', num_classes=num_classes)
+        
+        target_sev = cfg['training'].get('overfit_severity_class', 0)
+        
+        valid_chunks = []
+        for window in self.window_indices:
+            key = window[0]
+            base_key = key.split('_down')[0] if '_down' in key else key
+            if self.key_to_severity.get(base_key, 0) == target_sev:
+                valid_chunks.append(window)
+                
+        if not valid_chunks:
+            raise ValueError(f"No valid sequence chunks found for severity class {target_sev}")
+            
+        seed = cfg['training'].get('overfit_seed', 42)
+        rng = random.Random(seed)
+        single_window = rng.choice(valid_chunks)
+        
+        dummy_epoch_size = cfg['training']['batch_size'] * 10
+        self.window_indices = [single_window] * dummy_epoch_size
+        
+        print(f"\n[OVERFIT MODE - JOINT] Locked to chunk -> {single_window[0]} (Start: {single_window[1]}) \
+              | Class: {target_sev} | Seed: {seed}")
 
 
 def get_dataloader(cfg, mode='train', is_joint_model_train=False):
@@ -263,16 +283,24 @@ def get_dataloader(cfg, mode='train', is_joint_model_train=False):
         is_joint_model_train (bool): True if training the joint multimodal model.
     """
     # For eval and test modes, always use base SMPL6DDataset
-    if is_joint_model_train and mode == 'train':
-        dataset = JointSMPL6DDataset(cfg, mode=mode, num_classes=cfg['model'].get('num_classes', 4))
-    else:
-        dataset = SMPL6DDataset(cfg, mode=mode)
-
     is_train = mode == 'train'
+    is_overfit = cfg['training'].get('overfit_severity_class', -1) >= 0
+    
+    if is_overfit:
+        if is_joint_model_train and mode == 'train':
+            dataset = JointOverfitSMPL6DDataset(cfg, mode=mode, num_classes=cfg['model'].get('num_classes', 4))
+        else:
+            dataset = OverfitSMPL6DDataset(cfg, mode=mode)
+    else:
+        if is_joint_model_train and mode == 'train':
+            dataset = JointSMPL6DDataset(cfg, mode=mode, num_classes=cfg['model'].get('num_classes', 4))
+        else:
+            dataset = SMPL6DDataset(cfg, mode=mode)
+    
     return DataLoader(
         dataset,
         batch_size=cfg['training']['batch_size'],
-        shuffle=cfg['training']['shuffle'] if is_train else False,
+        shuffle=cfg['training']['shuffle'] if is_train and not is_overfit else False,
         num_workers=cfg['training']['num_workers'],
-        drop_last=is_train
+        drop_last=is_train and not is_overfit
     )

@@ -2,7 +2,6 @@ import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 import json
-import yaml
 import numpy as np
 from pathlib import Path
 
@@ -18,13 +17,25 @@ from thesis.src.sample import generate_trajectories
 from thesis.utils.pipeline_utils import load_config, format_and_convert, evaluate_pipeline
 
 
-CONFIG_PATH = "thesis/configs/baseline.yaml"
+CONFIG_PATH = "thesis/configs/overfit.yaml"
 
 
 if __name__ == "__main__":
     cfg = load_config(CONFIG_PATH)
     is_joint_model = cfg['model'].get('is_joint_model', False)
+    overfit_severity_class = cfg['training'].get('overfit_severity_class', -1)
     model_name = cfg['model'].get('name', 'GenerativeModel')
+
+    out_dir_path = Path(cfg['paths']['output_dir'])
+    out_dir_path.mkdir(parents=True, exist_ok=True)
+
+    wandb_logger = WandbLogger(
+        project="thesis",
+        name=model_name,
+        save_dir=str(out_dir_path),
+        config=cfg
+    )
+    
     print(f"\nStarting model train-test pipeline for '{model_name}' (Joint Model: {is_joint_model})...")
 
     if not is_joint_model:
@@ -39,19 +50,9 @@ if __name__ == "__main__":
         test_loader = get_dataloader(cfg, mode='test', is_joint_model_train=False)
 
     model = model_class(cfg)
-
-    out_dir_path = Path(cfg['paths']['output_dir'])
-    out_dir_path.mkdir(parents=True, exist_ok=True)
-
-    wandb_logger = WandbLogger(
-        project="thesis",
-        name=model_name,
-        save_dir=str(out_dir_path),
-        config=cfg
-    )
     
     log_interval = cfg['training'].get('log_interval', 5)
-    eval_interval = cfg['training'].get('eval_interval', 10)
+    eval_interval = cfg['training'].get('val_interval', 10)
     wandb_eval_interval = cfg['training'].get('wandb_eval_interval', 50)
 
     print_callback = EpochAndValPrintCallback(
@@ -89,41 +90,45 @@ if __name__ == "__main__":
     print("\n--- PHASE 2: DATASET GENERATION ---")
     best_model_path = checkpoint_callback.best_model_path
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # only execute model evaluation if not overfitting on single sequence
+    if overfit_severity_class == -1:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    print(f"Loading best checkpoint from: {best_model_path}")
-    best_model = model_class.load_from_checkpoint(best_model_path, cfg=cfg).to(device)
-    
-    data_dict = generate_trajectories(
-        model=best_model, 
-        dataloader=test_loader, 
-        num_steps=cfg['sampling']['num_steps'], 
-        device=device,
-        max_batches=-1,
-        desc="Generating Final Test Set", 
-        is_joint_model=is_joint_model,
-    )
+        print(f"Loading best checkpoint from: {best_model_path}")
+        best_model = model_class.load_from_checkpoint(best_model_path, cfg=cfg).to(device)
+        
+        data_dict = generate_trajectories(
+            model=best_model, 
+            dataloader=test_loader, 
+            num_steps=cfg['sampling']['num_steps'], 
+            device=device,
+            max_batches=-1,
+            desc="Generating Final Test Set", 
+            is_joint_model=is_joint_model,
+        )
 
-    if is_joint_model:
-        print("\n--- PHASE 2.5: CONDITIONAL ADHERENCE (LABEL ACCURACY) ---")
-        gt_sevs = np.array(data_dict["severities"])
-        gen_sevs = np.array(data_dict["gen_severities"])
+        if is_joint_model:
+            print("\n--- PHASE 2.5: CONDITIONAL ADHERENCE (LABEL ACCURACY) ---")
+            gt_sevs = np.array(data_dict["severities"])
+            gen_sevs = np.array(data_dict["gen_severities"])
+            
+            test_label_acc = np.mean(gt_sevs == gen_sevs)
+            correct_matches = np.sum(gt_sevs == gen_sevs)
+            
+            print(f"Final Test Label Accuracy: {test_label_acc:.4f} ({correct_matches}/{len(gt_sevs)} matches)")
+            
+            eval_dir = Path(cfg['paths']['output_dir']) / "evaluation"
+            eval_dir.mkdir(parents=True, exist_ok=True)
+            with open(eval_dir / "test_label_accuracy.json", "w") as f:
+                json.dump({"test_label_accuracy": float(test_label_acc)}, f, indent=4)
         
-        test_label_acc = np.mean(gt_sevs == gen_sevs)
-        correct_matches = np.sum(gt_sevs == gen_sevs)
-        
-        print(f"Final Test Label Accuracy: {test_label_acc:.4f} ({correct_matches}/{len(gt_sevs)} matches)")
-        
-        eval_dir = Path(cfg['paths']['output_dir']) / "evaluation"
-        eval_dir.mkdir(parents=True, exist_ok=True)
-        with open(eval_dir / "test_label_accuracy.json", "w") as f:
-            json.dump({"test_label_accuracy": float(test_label_acc)}, f, indent=4)
-    
-    print("\n--- PHASE 3: FORMAT CONVERSION ---")
-    paths = format_and_convert(data_dict, cfg, is_joint_model=is_joint_model)
+        print("\n--- PHASE 3: FORMAT CONVERSION ---")
+        paths = format_and_convert(data_dict, cfg, is_joint_model=is_joint_model)
 
-    print("\n--- PHASE 4: EVALUATION ---")
-    evaluate_pipeline(paths)
+        print("\n--- PHASE 4: EVALUATION ---")
+        evaluate_pipeline(paths)
+    else: 
+        print("[OVERFIT MODE] Skipping Test Generation and Evaluation.")
 
     wandb_logger.experiment.finish()
     print("\nPipeline Finished Successfully!")

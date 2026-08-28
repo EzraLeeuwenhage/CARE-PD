@@ -1,0 +1,48 @@
+model:
+  name: "Overfit-Joint-MLP"
+  is_joint_model: true
+  hidden_dim: 1024
+  class_embed_dim: 64
+  time_embed_dim: 64
+  num_classes: 4
+
+data:
+  num_joints: 24
+  6d_smpl_path: "thesis/data/raw/PD-GaM/6D_SMPL/PD-GaM_6D_SMPL_rot_trans_no_slope_no_veering.npz"
+  patient_prefix: "all"
+  severity_labels_path: "thesis/data/metadata/pd_gam_labels.json"
+
+windowing:
+  total_window_size: 60
+  prefix_length: 15
+  step_size: 10
+  min_z_travel: 0.5     # Minimum z-axis travel filter (in meters) for a window to be considered valid
+
+training:
+  overfit_severity_class: 2
+  overfit_seed: 42
+
+  epochs: 2000
+  learning_rate: 0.001
+  batch_size: 512
+  shuffle: true
+
+  eval_split: 0.1
+  test_split: 0.2
+
+  log_interval: 25
+  val_interval: 50
+  wandb_eval_interval: 1000  
+  eval_batches: -1      # where '-1' means all batches in the validation set
+  num_workers: 2
+
+  loss_weight: 0.2      # Weight between pose loss (1 - loss_weight) and translation loss (loss_weight)
+  lambda_motion: 3.0    # (Joint Model) Loss multiplier for continuous motion vector field 
+  lambda_label: 1.0     # (Joint Model) Loss multiplier for discrete CTMC jump rate matrix
+
+sampling:
+  num_steps: 20
+
+paths:
+  weights_dir: "thesis/data/checkpoints"
+  output_dir: "thesis/data/processed/{model_name}"

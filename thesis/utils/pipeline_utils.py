@@ -220,3 +220,26 @@ def forward_6d_to_h36m(pose_6d, trans, smpl_model, h36m_regressor, device):
         h36m_joints = vertices2joints(h36m_regressor, vertices_world)
         
     return h36m_joints.cpu().numpy()
+
+
+def batched_6d_to_h36m(pose_6d, trans, smpl_model, h36m_regressor, device, chunk_size=128):
+    """Processes (Batch, Time, Joints, 6) tensors efficiently in GPU chunks."""
+    N, T, J, _ = pose_6d.shape
+    out_h36m = np.zeros((N, T, 17, 3), dtype=np.float32)
+    
+    for i in range(0, N, chunk_size):
+        p_chunk = pose_6d[i:i+chunk_size].to(device)
+        t_chunk = trans[i:i+chunk_size].to(device)
+        B = p_chunk.shape[0]
+        
+        # Flatten sequences into a continuous timeline (Batch size * T) for the SMPL model
+        p_flat = p_chunk.reshape(B * T, J, 6)
+        t_flat = t_chunk.reshape(B * T, 3)
+        
+        # Process the entire chunk simultaneously on the GPU
+        h36m_flat = forward_6d_to_h36m(p_flat, t_flat, smpl_model, h36m_regressor, device)
+        
+        # Reshape back to individual sequences and store
+        out_h36m[i:i+chunk_size] = h36m_flat.reshape(B, T, 17, 3)
+        
+    return out_h36m

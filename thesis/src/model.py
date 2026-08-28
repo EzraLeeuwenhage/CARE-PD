@@ -288,15 +288,15 @@ class JointBaselineModel(ConditionalBaselineModel):
         super().__init__(cfg)
         self.lambda_motion = cfg['training'].get('lambda_motion', 1.0)
         self.lambda_label = cfg['training'].get('lambda_label', 1.0)
+        self.num_classes = cfg['model'].get('num_classes', 4)
         
         hidden_dim = cfg['model'].get('hidden_dim', 1024)
         class_embed_dim = cfg['model'].get('class_embed_dim', 64)
         time_embed_dim = cfg['model'].get('time_embed_dim', 64)
-        num_classes = cfg['model'].get('num_classes', 4)
         
         self.backbone = JointBaselineBackbone(cfg, hidden_dim, class_embed_dim, time_embed_dim)
         self.flow_head = FlowHead(hidden_dim, self.backbone.target_frames, self.backbone.num_joints)
-        self.jump_head = JumpHead(hidden_dim, num_classes=num_classes)
+        self.jump_head = JumpHead(hidden_dim, num_classes=self.num_classes)
 
     def forward(self, x_tau_dict, prefix_dict, t, y_tau):
         shared_latent = self.backbone(x_tau_dict, prefix_dict, t, y_tau)
@@ -342,10 +342,35 @@ class JointBaselineModel(ConditionalBaselineModel):
         return x_tau, y_tau
 
     def training_step(self, batch, batch_idx):
-        prefix_dict, x_tau_dict, y_tau, u_target_dict, y_target, t = batch
+        prefix_dict, target_dict, y_target = batch
+        batch_size = y_target.shape[0]
+
+        # Sample prior (x_0) and FM time (t)
+        x_0_dict = generate_prior_from_prefix(prefix_dict, target_dict)
+        tau = torch.rand(batch_size, 1, device=self.device)
+
+        # Continuous Flow part (linear interpolation)
+        tau_pose = tau.view(batch_size, 1, 1, 1)
+        tau_trans = tau.view(batch_size, 1, 1)
+
+        x_tau_dict = {
+            'pose': (1 - tau_pose) * x_0_dict['pose'] + tau_pose * target_dict['pose'],
+            'trans': (1 - tau_trans) * x_0_dict['trans'] + tau_trans * target_dict['trans']
+        }
+
+        u_target_dict = {
+            'pose': target_dict['pose'] - x_0_dict['pose'],
+            'trans': target_dict['trans'] - x_0_dict['trans']
+        }
+
+        # Discrete CTMC Jump part (jump mixture path)
+        # With probability tau, y_tau = y_target, else draw y_tau from Uni({0, 1, 2, 3})
+        mask = torch.rand(batch_size, device=self.device) < tau.squeeze(-1)
+        y_random = torch.randint(0, self.num_classes, (batch_size,), device=self.device)
+        y_tau = torch.where(mask, y_target, y_random)
         
         # Predict velocity field and rate matrix
-        u_pred_dict, Q_pred = self(x_tau_dict, prefix_dict, t, y_tau)
+        u_pred_dict, Q_pred = self(x_tau_dict, prefix_dict, tau, y_tau)
         
         # Calculate Conditional FM Loss (Motion)
         loss_pose = F.mse_loss(u_pred_dict['pose'], u_target_dict['pose'])
