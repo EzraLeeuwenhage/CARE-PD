@@ -17,7 +17,7 @@ from thesis.src.sample import generate_trajectories
 from thesis.utils.pipeline_utils import load_config, format_and_convert, evaluate_pipeline
 
 
-CONFIG_PATH = "thesis/configs/overfit.yaml"
+CONFIG_PATH = "thesis/configs/baseline.yaml"
 
 
 if __name__ == "__main__":
@@ -36,6 +36,11 @@ if __name__ == "__main__":
         save_dir=str(out_dir_path),
         config=cfg
     )
+
+    # Set default x-axis and slider key to epoch
+    wandb_logger.experiment.define_metric("epoch")
+    wandb_logger.experiment.define_metric("eval_videos/*", step_metric="epoch")
+    wandb_logger.experiment.define_metric("eval_visuals/*", step_metric="epoch")
     
     print(f"\nStarting model train-test pipeline for '{model_name}' (Joint Model: {is_joint_model})...")
 
@@ -54,7 +59,7 @@ if __name__ == "__main__":
     
     log_interval = cfg['training'].get('log_interval', 5)
     val_interval = cfg['training'].get('val_interval', 10)
-    wandb_val_interval = cfg['training'].get('wandb_eval_interval', 50)
+    wandb_val_interval = cfg['training'].get('wandb_val_interval', 50)
 
     print_callback = EpochAndValPrintCallback(
         train_interval=log_interval, 

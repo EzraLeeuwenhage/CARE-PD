@@ -304,14 +304,16 @@ class WandBEvaluationCallback(Callback):
                 probs=None,
                 y_true=data_dict["severities"],
                 preds=data_dict["gen_severities"],
-                class_names=["Class 0", "Class 1", "Class 2", "Class 3"]
+                class_names=["Class 0", "Class 1", "Class 2", "Class 3"],
+                title=f"Label Adherence Matrix (Epoch {epoch})"
             )
             
             wandb_logs["eval_metrics/Prior_State_Correlation_Matrix"] = wandb.plot.confusion_matrix(
                 probs=None,
                 y_true=data_dict["prior_severities"],
                 preds=data_dict["gen_severities"],
-                class_names=["Class 0", "Class 1", "Class 2", "Class 3"]
+                class_names=["Class 0", "Class 1", "Class 2", "Class 3"],
+                title=f"Prior Jump Correlation Matrix (Epoch {epoch})"
             )
         
         for gif_path in gif_paths:
