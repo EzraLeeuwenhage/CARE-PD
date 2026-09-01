@@ -108,7 +108,7 @@ def compare_h36m_npz(new_npz_path, baseline_npz_path):
 
 
 if __name__ == "__main__":
-    input_6d_npz = "thesis/data/raw/PD-GaM/6D_SMPL/PD-GaM_6D_SMPL_rot_trans_no_slope_no_veering.npz"
+    input_6d_npz = "thesis/data/raw/PD-GaM/6D_SMPL/PD-GaM_6D_SMPL_rot_trans_canonical.npz"
     baseline_h36m_npz = "thesis/data/raw/PD-GaM/h36m/PD-GaM_h36m_3d_world_no_slope_no_veering.npz"
     
     # Define temp staging paths

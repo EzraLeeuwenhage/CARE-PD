@@ -8,7 +8,7 @@ model:
 
 data:
   num_joints: 24
-  6d_smpl_path: "thesis/data/raw/PD-GaM/6D_SMPL/PD-GaM_6D_SMPL_rot_trans_no_slope_no_veering.npz"
+  6d_smpl_path: "thesis/data/raw/PD-GaM/6D_SMPL/PD-GaM_6D_SMPL_rot_trans_canonical.npz"
   patient_prefix: "all"
   severity_labels_path: "thesis/data/metadata/pd_gam_labels.json"
 
@@ -32,7 +32,7 @@ training:
 
   log_interval: 25
   val_interval: 50
-  wandb_eval_interval: 1000  
+  wandb_val_interval: 1000  
   eval_batches: -1      # where '-1' means all batches in the validation set
   num_workers: 2
 

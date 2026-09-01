@@ -115,7 +115,7 @@ def canonicalize_smpl_sequence(pose_world, h36m_joints_world, smpl_model, h36m_r
 
 
 def compute_6D_motionclip_representation_from_pkl_SMPL_params(cfg):
-    cfg.OUT_PATH_f = cfg.OUT_PATH / f'PD-GaM_6D_SMPL_rot_trans_no_slope_no_veering.npz'
+    cfg.OUT_PATH_f = cfg.OUT_PATH / f'PD-GaM_6D_SMPL_rot_trans_canonical.npz'
     
     h36m_regressor = torch.tensor(np.load(cfg.H36M_J_REG), dtype=torch.float32).to(_DEVICE)
     smpl_model = SMPL(model_path=cfg.MODEL_PATH, num_betas=10).to(_DEVICE)
