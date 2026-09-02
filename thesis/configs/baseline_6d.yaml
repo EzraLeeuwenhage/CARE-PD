@@ -7,8 +7,9 @@ model:
   num_classes: 4
 
 data:
+  representation: "6D"  # Switch between 6D and 3D SMPL for model input
   num_joints: 24
-  6d_smpl_path: "thesis/data/raw/PD-GaM/6D_SMPL/PD-GaM_6D_SMPL_rot_trans_canonical.npz"
+  smpl_path: "thesis/data/raw/PD-GaM/6D_SMPL/PD-GaM_6D_SMPL_rot_trans_canonical.npz"
   patient_prefix: "all"
   severity_labels_path: "thesis/data/metadata/pd_gam_labels.json"
 

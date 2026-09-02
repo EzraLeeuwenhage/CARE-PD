@@ -5,8 +5,11 @@ from torch.utils.data import Dataset, DataLoader
 from collections import defaultdict
 import random
 
-class SMPL3DDataset(Dataset):
-    """Base dataset class for 3D Axis-Angle Flow Matching models."""
+
+class SMPL6DDataset(Dataset):
+    """Base dataset class for Conditional Flow Matching models.
+    Yields pairs of the form (prefix_dict, target_dict, severity_score).
+    """
     def __init__(self, cfg, mode='train'):
         super().__init__()
         self.mode = mode
@@ -16,19 +19,21 @@ class SMPL3DDataset(Dataset):
         self.prefix_length = self.cfg['windowing']['prefix_length']
         self.step_size = self.cfg['windowing']['step_size']
         
+        # Extract minimum z travel setting with a fallback default of 0.0
         self.min_z_travel = self.cfg['windowing'].get('min_z_travel', 0.0)
         self.filter_z_travel = self.cfg['windowing'].get('filter_z_travel', True)
         
+        # Determine split percentages
         eval_split = self.cfg['training'].get('eval_split', 0.1)
         test_split = self.cfg['training'].get('test_split', 0.2)
 
-        # Load the 3D representation
         with np.load(self.cfg['data']['smpl_path'], allow_pickle=True) as npz:
             raw_data = {k: np.array(v) for k, v in npz.items()}
 
         self.pose_data = {}
         self.trans_data = {}
 
+        # Separate pose and translation data on suffix
         for key, tensor in raw_data.items():
             if not key.endswith('_trans'):
                 self.pose_data[key] = tensor
@@ -38,6 +43,7 @@ class SMPL3DDataset(Dataset):
                 else:
                     raise KeyError(f"Missing paired translation data for pose sequence: '{key}'")
 
+        # Check for specific patient prefix or load all data
         patient_prefix = self.cfg['data'].get('patient_prefix')
         
         if not patient_prefix or str(patient_prefix).lower() == 'all':
@@ -49,10 +55,12 @@ class SMPL3DDataset(Dataset):
         if not all_keys:
             raise ValueError(f"No keys found for prefix: {patient_prefix}")
 
+        # Do stratified split on severity class
         with open(self.cfg['data']['severity_labels_path'], "r") as f:
             metadata = json.load(f)
             self.key_to_severity = metadata["key_to_severity"]
 
+        # Pre-filter sequences so ONLY those that produce >= 1 valid chunk enter the split pool
         valid_pool_keys, discarded_short, discarded_no_travel = self._filter_valid_sequences(all_keys)
         self.discarded_keys = discarded_short
 
@@ -63,6 +71,7 @@ class SMPL3DDataset(Dataset):
             test_split=test_split
         )
 
+        # use sliding windows to build index map
         self.window_indices = []
         total_chunks_inspected = 0
         chunk_counts = defaultdict(int)
@@ -76,6 +85,7 @@ class SMPL3DDataset(Dataset):
                 total_chunks_inspected += 1
                 end_idx = start_idx + self.window_size
 
+                # Compute Z-distance travelled across this specific sequence chunk
                 start_z = self.trans_data[key][start_idx, 2]
                 end_z = self.trans_data[key][end_idx - 1, 2]
                 z_travel = abs(end_z - start_z)
@@ -85,14 +95,19 @@ class SMPL3DDataset(Dataset):
                     chunk_counts[sev] += 1
                 
         self._print_split_summary(
-            mode=mode, seq_stats=seq_stats, chunk_counts=chunk_counts,
-            total_inspected=total_chunks_inspected, discarded_keys=self.discarded_keys,
+            mode=mode,
+            seq_stats=seq_stats,
+            chunk_counts=chunk_counts,
+            total_inspected=total_chunks_inspected,
+            discarded_keys=self.discarded_keys,
             discarded_no_travel=discarded_no_travel
         )
 
     def _get_stratified_keys(self, all_keys, mode, eval_split, test_split):
+        """Deterministically splits sequence keys by clinical severity class."""
         from collections import defaultdict
         class_groups = defaultdict(list)
+        
         for k in all_keys:
             base_k = k.split('_down')[0] if '_down' in k else k
             sev = self.key_to_severity.get(base_k, 0)
@@ -100,6 +115,7 @@ class SMPL3DDataset(Dataset):
 
         stratified_keys = []
         seq_stats = {}
+        
         for sev, keys_in_class in sorted(class_groups.items()):
             keys_in_class.sort()
             n_cls = len(keys_in_class)
@@ -109,15 +125,20 @@ class SMPL3DDataset(Dataset):
             train_end = max(0, n_cls - n_eval - n_test)
             eval_end = n_cls - n_test
             
-            if mode == 'train': selected = keys_in_class[:train_end]
-            elif mode == 'eval': selected = keys_in_class[train_end:eval_end]
-            elif mode == 'test': selected = keys_in_class[eval_end:]
+            if mode == 'train':
+                selected = keys_in_class[:train_end]
+            elif mode == 'eval':
+                selected = keys_in_class[train_end:eval_end]
+            elif mode == 'test':
+                selected = keys_in_class[eval_end:]
                 
             stratified_keys.extend(selected)
             seq_stats[sev] = (len(selected), n_cls)
+            
         return stratified_keys, seq_stats
 
     def _filter_valid_sequences(self, all_keys):
+        """Pre-filters sequences to only include those that yield at least 1 valid chunk."""
         valid_seq_keys, discarded_short, discarded_no_travel = [], [], []
         for key in all_keys:
             num_frames = self.pose_data[key].shape[0]
@@ -125,6 +146,7 @@ class SMPL3DDataset(Dataset):
                 discarded_short.append(key)
                 continue
             
+            # make sure at least one chunk satisfies min_z_travel
             has_valid_chunk = False
             for start_idx in range(0, num_frames - self.window_size + 1, self.step_size):
                 end_idx = start_idx + self.window_size
@@ -135,11 +157,15 @@ class SMPL3DDataset(Dataset):
                     has_valid_chunk = True
                     break
                     
-            if has_valid_chunk: valid_seq_keys.append(key)
-            else: discarded_no_travel.append(key)
+            if has_valid_chunk:
+                valid_seq_keys.append(key)
+            else:
+                discarded_no_travel.append(key)
+                
         return valid_seq_keys, discarded_short, discarded_no_travel
 
     def _print_split_summary(self, mode, seq_stats, chunk_counts, total_inspected, discarded_keys, discarded_no_travel):
+        """Prints a clean, organized table of sequence and chunk counts per class."""
         print(f"\n{mode.upper()} SET")
         print(f" {'Severity':<10} | {'Sequences (Split / Total)':<26} | {'Valid Chunks':<12}")
         print("-" * 65)
@@ -154,10 +180,14 @@ class SMPL3DDataset(Dataset):
             
         print("-" * 65)
         print(f" {'TOTAL':<10} | {f'{total_seq_selected} / {total_seq_all}':<26} | {total_chunks:>10,}")
+        
         filtered_out = total_inspected - total_chunks
-        if filtered_out > 0: print(f"  * Filtered out {filtered_out:,} individual chunks with < {self.min_z_travel}m Z-travel.")
-        if discarded_no_travel: print(f"  * Excluded {len(discarded_no_travel)} sequence(s).")
-        if discarded_keys: print(f"  * Discarded {len(discarded_keys)} short sequence(s).")
+        if filtered_out > 0:
+            print(f"  * Filtered out {filtered_out:,} individual chunks with < {self.min_z_travel}m Z-travel.")
+        if discarded_no_travel:
+            print(f"  * Excluded {len(discarded_no_travel)} entire sequence(s) from split pool (0 valid chunks >= {self.min_z_travel}m).")
+        if discarded_keys:
+            print(f"  * Discarded {len(discarded_keys)} short sequence(s) (< {self.window_size} frames): {discarded_keys}")
 
     def __len__(self):
         return len(self.window_indices)
@@ -166,8 +196,8 @@ class SMPL3DDataset(Dataset):
         key, start_idx = self.window_indices[idx]
         end_idx = start_idx + self.window_size
         
-        # 3D data natively has shape (T, 24, 3), no slicing needed beyond indexing
-        pose_window = torch.tensor(self.pose_data[key][start_idx:end_idx], dtype=torch.float32)
+        # Sliced to 24 joints here to drop the empty 25th padding joint
+        pose_window = torch.tensor(self.pose_data[key][start_idx:end_idx, :24, :], dtype=torch.float32)
         trans_window = torch.tensor(self.trans_data[key][start_idx:end_idx], dtype=torch.float32)
         
         prefix = {'pose': pose_window[:self.prefix_length], 'trans': trans_window[:self.prefix_length]}
@@ -177,51 +207,97 @@ class SMPL3DDataset(Dataset):
         severity_tensor = torch.tensor(severity_score, dtype=torch.long)
         return prefix, target, severity_tensor
 
-class JointSMPL3DDataset(SMPL3DDataset):
+
+class JointSMPL6DDataset(SMPL6DDataset):
+    """Dataset for Multimodal Joint Generator Matching models.
+    
+    Overrides __getitem__ to compute FM time tau, continuous noisy state x_tau, 
+    target velocity u_target, and discrete CTMC noisy label y_tau.
+    TODO: cite Campbell et al. 2024 DFM and/or Holderrieth et al. 2025 GM papers for Jump part.
+    """
     def __init__(self, cfg, mode='train', num_classes=4):
         super().__init__(cfg, mode=mode)
         self.num_classes = num_classes
 
-class OverfitSMPL3DDataset(SMPL3DDataset):
+
+class OverfitSMPL6DDataset(SMPL6DDataset):
+    """Sanity check dataset that artificially repeats a single randomly selected sequence of a specific class."""
     def __init__(self, cfg, mode='train'):
         super().__init__(cfg, mode='train')
+
         target_sev = cfg['training'].get('overfit_severity_class', 0)
-        valid_chunks = [w for w in self.window_indices if self.key_to_severity.get(w[0].split('_down')[0] if '_down' in w[0] else w[0], 0) == target_sev]
-        if not valid_chunks: raise ValueError(f"No valid sequence chunks found for severity class {target_sev}")
+        
+        valid_chunks = []
+        for window in self.window_indices:
+            key = window[0]
+            base_key = key.split('_down')[0] if '_down' in key else key
+            if self.key_to_severity.get(base_key, 0) == target_sev:
+                valid_chunks.append(window)
+                
+        if not valid_chunks:
+            raise ValueError(f"No valid sequence chunks found for severity class {target_sev}")
+
         seed = cfg['training'].get('overfit_seed', 42)
         rng = random.Random(seed)
         single_window = rng.choice(valid_chunks)
+
         dummy_epoch_size = cfg['training']['batch_size'] * 10
         self.window_indices = [single_window] * dummy_epoch_size
-        print(f"\n[OVERFIT MODE] Locked to chunk -> {single_window[0]} (Start: {single_window[1]}) | Class: {target_sev} | Seed: {seed}")
+        
+        print(f"\n[OVERFIT MODE] Locked to chunk -> {single_window[0]} (Start: {single_window[1]}) \
+              | Class: {target_sev} | Seed: {seed}")
+        
 
-class JointOverfitSMPL3DDataset(JointSMPL3DDataset):
+class JointOverfitSMPL6DDataset(JointSMPL6DDataset):
+    """Sanity check dataset for Joint Models."""
     def __init__(self, cfg, mode='train', num_classes=4):
         super().__init__(cfg, mode='train', num_classes=num_classes)
+        
         target_sev = cfg['training'].get('overfit_severity_class', 0)
-        valid_chunks = [w for w in self.window_indices if self.key_to_severity.get(w[0].split('_down')[0] if '_down' in w[0] else w[0], 0) == target_sev]
-        if not valid_chunks: raise ValueError(f"No valid sequence chunks found for severity class {target_sev}")
+        
+        valid_chunks = []
+        for window in self.window_indices:
+            key = window[0]
+            base_key = key.split('_down')[0] if '_down' in key else key
+            if self.key_to_severity.get(base_key, 0) == target_sev:
+                valid_chunks.append(window)
+                
+        if not valid_chunks:
+            raise ValueError(f"No valid sequence chunks found for severity class {target_sev}")
+            
         seed = cfg['training'].get('overfit_seed', 42)
         rng = random.Random(seed)
         single_window = rng.choice(valid_chunks)
+        
         dummy_epoch_size = cfg['training']['batch_size'] * 10
         self.window_indices = [single_window] * dummy_epoch_size
-        print(f"\n[OVERFIT MODE - JOINT] Locked to chunk -> {single_window[0]} (Start: {single_window[1]}) | Class: {target_sev} | Seed: {seed}")
+        
+        print(f"\n[OVERFIT MODE - JOINT] Locked to chunk -> {single_window[0]} (Start: {single_window[1]}) \
+              | Class: {target_sev} | Seed: {seed}")
+
 
 def get_dataloader(cfg, mode='train', is_joint_model_train=False):
+    """Builds appropriate dataloader for conditional or joint models.
+    
+    Args:
+        cfg (dict): configuration dictionary.
+        mode (str): 'train', 'eval', or 'test'.
+        is_joint_model_train (bool): True if training the joint multimodal model.
+    """
+    # For eval and test modes, always use base SMPL6DDataset
     is_train = mode == 'train'
     is_overfit = cfg['training'].get('overfit_severity_class', -1) >= 0
     
     if is_overfit:
         if is_joint_model_train and mode == 'train':
-            dataset = JointOverfitSMPL3DDataset(cfg, mode=mode, num_classes=cfg['model'].get('num_classes', 4))
+            dataset = JointOverfitSMPL6DDataset(cfg, mode=mode, num_classes=cfg['model'].get('num_classes', 4))
         else:
-            dataset = OverfitSMPL3DDataset(cfg, mode=mode)
+            dataset = OverfitSMPL6DDataset(cfg, mode=mode)
     else:
         if is_joint_model_train and mode == 'train':
-            dataset = JointSMPL3DDataset(cfg, mode=mode, num_classes=cfg['model'].get('num_classes', 4))
+            dataset = JointSMPL6DDataset(cfg, mode=mode, num_classes=cfg['model'].get('num_classes', 4))
         else:
-            dataset = SMPL3DDataset(cfg, mode=mode)
+            dataset = SMPL6DDataset(cfg, mode=mode)
     
     return DataLoader(
         dataset,

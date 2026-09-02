@@ -2,7 +2,7 @@ import numpy as np
 import joblib
 from pathlib import Path
 
-from thesis.utils.sixD2smpl import convert_6d_to_smpl
+from thesis.utils.legacy_6d.sixD2smpl import convert_6d_to_smpl
 from thesis.src.care_pd.smpl2h36m import convert_smpl_to_h36m
 
 def convert_6d_npz_to_smpl_pkl(npz_path, pkl_path):

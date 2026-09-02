@@ -6,10 +6,13 @@ from pathlib import Path
 from scipy.spatial.transform import Rotation
 from scipy.signal import find_peaks
 from sklearn.decomposition import PCA
+from thesis.src.care_pd.conversion_utils import axis_angle_to_matrix
 
 class SMPLEvaluator:
     def __init__(self, fps=30):
-        """Evaluator for 6D SMPL pose sequences using Geodesic Distance on SO(3)."""
+        """Evaluator for SMPL pose sequences using Geodesic Distance on SO(3).
+        Supports both 3D Axis-Angle and 6D Continuous Rotation inputs.
+        """
         self.fps = fps
         # Standard 24 SMPL model joint names ordered by index
         self.JOINT_NAMES = [
@@ -37,45 +40,53 @@ class SMPLEvaluator:
     # ---------
     # MPJAE
     # ---------
-    def _convert_6d_to_rmat(self, pose_6d_tensor):
-        """Gram-Schmidt to convert 6d pose tensors to (T, 3, 3) rotation matrices.
+    def _to_rmat(self, pose_tensor):
+        """Converts either 3D axis-angle or 6D continuous rotations to (T, 3, 3) rotation matrices.
         
-        Supports batched training tensors (B, T, J, 6) or single sequences (T, J, 6).
-        Constructs the rotation matrix by stacking rows due to original CARE-PD formatting.
+        Dynamically infers the representation based on the last dimension size.
+        Supports batched training tensors (B, T, J, D) or single sequences (T, J, D).
         """
-        if isinstance(pose_6d_tensor, np.ndarray):
-            pose_6d_tensor = torch.tensor(pose_6d_tensor, dtype=torch.float32)
+        if isinstance(pose_tensor, np.ndarray):
+            pose_tensor = torch.tensor(pose_tensor, dtype=torch.float32)
 
         # 25th joint shouldn't exist during evaluation
-        if pose_6d_tensor.shape[-2] == 25:
-            raise ValueError("Data to evaluate contains 25 joints. Should be 24.")
+        if pose_tensor.shape[-2] == 25:
+            pose_tensor = pose_tensor[..., :24, :]
             
-        v1 = pose_6d_tensor[..., :3]
-        v2 = pose_6d_tensor[..., 3:]
+        dim = pose_tensor.shape[-1]
         
-        x = torch.nn.functional.normalize(v1, dim=-1)
-        y_raw = v2 - (torch.sum(x * v2, dim=-1, keepdim=True) * x)
-        y = torch.nn.functional.normalize(y_raw, dim=-1)
-        z = torch.cross(x, y, dim=-1)
-        
-        # Stack into (T, 3, 3) rotation matrices
-        # and handle x,y,z as rows because CARE-PD for some reason 
-        # decided to format 6D rotations as first 2 rows instead of first 2 columns like normal humans
-        rot_mats = torch.stack([x, y, z], dim=-2)
-        return rot_mats
+        if dim == 3:
+            return axis_angle_to_matrix(pose_tensor)
+            
+        elif dim == 6:
+            # Gram-Schmidt Orthogonalization
+            v1 = pose_tensor[..., :3]
+            v2 = pose_tensor[..., 3:]
+            
+            x = torch.nn.functional.normalize(v1, dim=-1)
+            y_raw = v2 - (torch.sum(x * v2, dim=-1, keepdim=True) * x)
+            y = torch.nn.functional.normalize(y_raw, dim=-1)
+            z = torch.cross(x, y, dim=-1)
+            
+            # Stack into (T, 3, 3) rotation matrices using rows
+            rot_mats = torch.stack([x, y, z], dim=-2)
+            return rot_mats
+            
+        else:
+            raise ValueError(f"Expected last dimension to be 3 (axis-angle) or 6 (continuous), got {dim}")
 
     @torch.no_grad()
-    def compute_mpjae(self, gt_6d, gen_6d, return_per_joint=False):
+    def compute_mpjae(self, gt_pose, gen_pose, return_per_joint=False):
         """Computes the Mean Per Joint Angular Error (MPJAE) using Geodesic Distance.
 
         Args:
-            gt_6d: Ground truth tensor (..., J, 6)
-            gen_6d: Generated tensor (..., J, 6)
+            gt_pose: Ground truth tensor (..., J, D)
+            gen_pose: Generated tensor (..., J, D)
             return_per_joint: If True, returns array of shape (24,) with error per joint.
                               If False, returns overall scalar float (radians).
         """
-        R_gt = self._convert_6d_to_rmat(gt_6d)   
-        R_gen = self._convert_6d_to_rmat(gen_6d) 
+        R_gt = self._to_rmat(gt_pose)   
+        R_gen = self._to_rmat(gen_pose) 
 
         # Truncate to the length of the shortest sequence along the Temporal (T) dimension
         # In a (B, T, J, 3, 3) tensor, T is at index -4. In a (T, J, 3, 3) tensor, T is at -3.
@@ -177,16 +188,16 @@ class SMPLEvaluator:
             mean_rom = float(np.max(swing_1d) - np.min(swing_1d))
         return mean_rom, cycle_validations
 
-    def compute_arm_swing_asymmetry(self, seq_6d, prominence=0.05):
+    def compute_arm_swing_asymmetry(self, seq_pose, prominence=0.05):
         """
-        Wrapper to compute L/R swing asymmetry directly from a 6D tensor sequence.
+        Wrapper to compute L/R swing asymmetry directly from a sequence tensor.
         ROM_L/R are the means of the ROM for each sequence.
         Asymmetry is the absolute difference between L and R mean ROM.
 
         Args:
-            seq_6d: numpy array or tensor of shape (T, 24, 6)
+            seq_pose: numpy array or tensor of shape (T, 24, D) where D is 3 or 6
         """
-        R_seq = self._convert_6d_to_rmat(seq_6d).numpy()
+        R_seq = self._to_rmat(seq_pose).numpy()
         
         L_shoulder_idx = self.JOINT_NAMES.index('L_Shoulder')
         R_shoulder_idx = self.JOINT_NAMES.index('R_Shoulder')
@@ -245,9 +256,9 @@ class SMPLEvaluator:
         
         return arc_length, f, A_norm, fc_adj
 
-    def compute_sparc_for_sequence(self, seq_6d, plot_joint=None, plot_prefix=""):
+    def compute_sparc_for_sequence(self, seq_pose, plot_joint=None, plot_prefix=""):
         """Extracts angular velocity magnitude and computes SPARC for all 24 joints."""
-        rot_mats = self._convert_6d_to_rmat(seq_6d).numpy()
+        rot_mats = self._to_rmat(seq_pose).numpy()
         T, J, _, _ = rot_mats.shape
         if T < 2:
             return np.full(J, np.nan)
@@ -311,7 +322,7 @@ class SMPLEvaluator:
         }
 
     def evaluate_from_memory(self, gt_data, gen_data, labels, plot_sparc_joint=None):
-        """Computes metrics from 6D pose dictionaries in memory."""
+        """Computes metrics from pose dictionaries in memory."""
         from joblib import Parallel, delayed
         
         common_keys = [k for k in gt_data.keys() if k in gen_data.keys() and not k.endswith('_trans')]
@@ -465,7 +476,7 @@ class SMPLEvaluator:
         return summary_results, cache_data
 
     def evaluate_and_cache(self, gt_npz_path, gen_npz_path, labels_path, cache_output_path, plot_sparc_joint=None):
-        """Loads unified GT/Gen 6D datasets from disk, computes MPJAE, caches result."""
+        """Loads unified GT/Gen datasets from disk, computes MPJAE, caches result."""
         with open(labels_path, 'r') as f:
             labels = json.load(f)["key_to_severity"]
 

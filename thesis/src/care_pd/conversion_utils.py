@@ -1,14 +1,17 @@
 """TODO: Add proper citation for CARE-PD repo and authorship of code. """
 
+import warnings
 import numpy as np
-if not hasattr(np, 'bool'):
-    np.bool = np.bool_
-    np.int = int
-    np.float = float
-    np.complex = complex
-    np.object = object
-    np.unicode = str
-    np.str = str
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", (FutureWarning, DeprecationWarning))
+    if not hasattr(np, 'bool'):
+        np.bool = np.bool_
+        np.int = int
+        np.float = float
+        np.complex = complex
+        np.object = object
+        np.unicode = str
+        np.str = str
 
 import torch
 from scipy.spatial.transform import Rotation as R
