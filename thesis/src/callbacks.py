@@ -195,7 +195,7 @@ class WandBEvaluationCallback(Callback):
                 gen_suffix = pl_module.generate_suffix(
                     anchor_data["prefix"], anchor_data["x_0"], severity_score=torch.tensor([sev_val]).to(pl_module.device), num_steps=self.cfg['sampling']['num_steps']
                 )
-                gen_sev_val = sev_val
+                gen_sev_val = None
                 
             gt_full_pose = torch.cat([anchor_data["prefix"]['pose'], anchor_data["target"]['pose']], dim=1)[0]
             gt_full_trans = torch.cat([anchor_data["prefix"]['trans'], anchor_data["target"]['trans']], dim=1)[0]
