@@ -6,7 +6,9 @@ from collections import defaultdict
 import random
 
 class SMPLDataset(Dataset):
-    """Base dataset class for Flow Matching models."""
+    """Base dataset class for Flow Matching models.
+    Yields pairs of the form (prefix_dict, target_dict, severity_score).
+    """
     def __init__(self, cfg, mode='train'):
         super().__init__()
         self.mode = mode
@@ -16,9 +18,11 @@ class SMPLDataset(Dataset):
         self.prefix_length = self.cfg['windowing']['prefix_length']
         self.step_size = self.cfg['windowing']['step_size']
         
+        # Extract minimum z travel setting with a fallback default of 0.0
         self.min_z_travel = self.cfg['windowing'].get('min_z_travel', 0.0)
         self.filter_z_travel = self.cfg['windowing'].get('filter_z_travel', True)
         
+        # Determine split percentages
         eval_split = self.cfg['training'].get('eval_split', 0.1)
         test_split = self.cfg['training'].get('test_split', 0.2)
 
@@ -29,6 +33,7 @@ class SMPLDataset(Dataset):
         self.pose_data = {}
         self.trans_data = {}
 
+        # Separate pose and translation data on suffix
         for key, tensor in raw_data.items():
             if not key.endswith('_trans'):
                 self.pose_data[key] = tensor
@@ -38,6 +43,7 @@ class SMPLDataset(Dataset):
                 else:
                     raise KeyError(f"Missing paired translation data for pose sequence: '{key}'")
 
+        # Check for specific patient prefix or load all data
         patient_prefix = self.cfg['data'].get('patient_prefix')
         
         if not patient_prefix or str(patient_prefix).lower() == 'all':
@@ -49,10 +55,12 @@ class SMPLDataset(Dataset):
         if not all_keys:
             raise ValueError(f"No keys found for prefix: {patient_prefix}")
 
+        # Do stratified split on severity class
         with open(self.cfg['data']['severity_labels_path'], "r") as f:
             metadata = json.load(f)
             self.key_to_severity = metadata["key_to_severity"]
 
+        # Pre-filter sequences so ONLY those that produce >= 1 valid chunk enter the split pool
         valid_pool_keys, discarded_short, discarded_no_travel = self._filter_valid_sequences(all_keys)
         self.discarded_keys = discarded_short
 
@@ -63,6 +71,7 @@ class SMPLDataset(Dataset):
             test_split=test_split
         )
 
+        # use sliding windows to build index map
         self.window_indices = []
         total_chunks_inspected = 0
         chunk_counts = defaultdict(int)
@@ -76,6 +85,7 @@ class SMPLDataset(Dataset):
                 total_chunks_inspected += 1
                 end_idx = start_idx + self.window_size
 
+                # Compute Z-distance travelled across this specific sequence chunk
                 start_z = self.trans_data[key][start_idx, 2]
                 end_z = self.trans_data[key][end_idx - 1, 2]
                 z_travel = abs(end_z - start_z)
@@ -91,6 +101,7 @@ class SMPLDataset(Dataset):
         )
 
     def _get_stratified_keys(self, all_keys, mode, eval_split, test_split):
+        """Deterministically splits sequence keys by clinical severity class."""
         from collections import defaultdict
         class_groups = defaultdict(list)
         for k in all_keys:
@@ -118,6 +129,7 @@ class SMPLDataset(Dataset):
         return stratified_keys, seq_stats
 
     def _filter_valid_sequences(self, all_keys):
+        """Pre-filters sequences to only include those that yield at least 1 valid chunk."""
         valid_seq_keys, discarded_short, discarded_no_travel = [], [], []
         for key in all_keys:
             num_frames = self.pose_data[key].shape[0]
@@ -125,6 +137,7 @@ class SMPLDataset(Dataset):
                 discarded_short.append(key)
                 continue
             
+            # make sure at least one chunk satisfies min_z_travel
             has_valid_chunk = False
             for start_idx in range(0, num_frames - self.window_size + 1, self.step_size):
                 end_idx = start_idx + self.window_size
@@ -140,6 +153,7 @@ class SMPLDataset(Dataset):
         return valid_seq_keys, discarded_short, discarded_no_travel
 
     def _print_split_summary(self, mode, seq_stats, chunk_counts, total_inspected, discarded_keys, discarded_no_travel):
+        """Prints a clean, organized table of sequence and chunk counts per class."""
         print(f"\n{mode.upper()} SET")
         print(f" {'Severity':<10} | {'Sequences (Split / Total)':<26} | {'Valid Chunks':<12}")
         print("-" * 65)
@@ -154,10 +168,11 @@ class SMPLDataset(Dataset):
             
         print("-" * 65)
         print(f" {'TOTAL':<10} | {f'{total_seq_selected} / {total_seq_all}':<26} | {total_chunks:>10,}")
+        
         filtered_out = total_inspected - total_chunks
         if filtered_out > 0: print(f"  * Filtered out {filtered_out:,} individual chunks with < {self.min_z_travel}m Z-travel.")
-        if discarded_no_travel: print(f"  * Excluded {len(discarded_no_travel)} sequence(s).")
-        if discarded_keys: print(f"  * Discarded {len(discarded_keys)} short sequence(s).")
+        if discarded_no_travel: print(f"  * Excluded {len(discarded_no_travel)} entire sequence(s) from split pool (0 valid chunks >= {self.min_z_travel}m).")
+        if discarded_keys: print(f"  * Discarded {len(discarded_keys)} short sequence(s) (< {self.window_size} frames): {discarded_keys}")
 
     def __len__(self):
         return len(self.window_indices)
@@ -166,8 +181,9 @@ class SMPLDataset(Dataset):
         key, start_idx = self.window_indices[idx]
         end_idx = start_idx + self.window_size
         
-        # Data shape (T, 24, D)
-        pose_window = torch.tensor(self.pose_data[key][start_idx:end_idx], dtype=torch.float32)
+        # Sliced to 24 joints here to drop the empty 25th padding joint.
+        # Data natively has shape (T, 24, D)
+        pose_window = torch.tensor(self.pose_data[key][start_idx:end_idx, :24, :], dtype=torch.float32)
         trans_window = torch.tensor(self.trans_data[key][start_idx:end_idx], dtype=torch.float32)
         
         prefix = {'pose': pose_window[:self.prefix_length], 'trans': trans_window[:self.prefix_length]}
@@ -178,11 +194,17 @@ class SMPLDataset(Dataset):
         return prefix, target, severity_tensor
 
 class JointSMPLDataset(SMPLDataset):
+    """Dataset for Multimodal Joint Generator Matching models.
+    
+    Computes FM time tau, continuous noisy state x_tau, 
+    target velocity u_target, and discrete CTMC noisy label y_tau.
+    """
     def __init__(self, cfg, mode='train', num_classes=4):
         super().__init__(cfg, mode=mode)
         self.num_classes = num_classes
 
 class OverfitSMPLDataset(SMPLDataset):
+    """Sanity check dataset that artificially repeats a single randomly selected sequence of a specific class."""
     def __init__(self, cfg, mode='train'):
         super().__init__(cfg, mode='train')
         target_sev = cfg['training'].get('overfit_severity_class', 0)
@@ -196,6 +218,7 @@ class OverfitSMPLDataset(SMPLDataset):
         print(f"\n[OVERFIT MODE] Locked to chunk -> {single_window[0]} (Start: {single_window[1]}) | Class: {target_sev} | Seed: {seed}")
 
 class JointOverfitSMPLDataset(JointSMPLDataset):
+    """Sanity check dataset for Joint Models."""
     def __init__(self, cfg, mode='train', num_classes=4):
         super().__init__(cfg, mode='train', num_classes=num_classes)
         target_sev = cfg['training'].get('overfit_severity_class', 0)
@@ -209,6 +232,13 @@ class JointOverfitSMPLDataset(JointSMPLDataset):
         print(f"\n[OVERFIT MODE - JOINT] Locked to chunk -> {single_window[0]} (Start: {single_window[1]}) | Class: {target_sev} | Seed: {seed}")
 
 def get_dataloader(cfg, mode='train', is_joint_model_train=False):
+    """Builds appropriate dataloader for conditional or joint models.
+    
+    Args:
+        cfg (dict): configuration dictionary.
+        mode (str): 'train', 'eval', or 'test'.
+        is_joint_model_train (bool): True if training the joint multimodal model.
+    """
     is_train = mode == 'train'
     is_overfit = cfg['training'].get('overfit_severity_class', -1) >= 0
     

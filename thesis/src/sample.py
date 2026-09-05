@@ -5,12 +5,12 @@ from pathlib import Path
 
 from thesis.src.generate_prior import generate_prior_from_prefix
 
-def save_generated_to_npz(full_seq_6d, full_seq_trans, output_dir, filename="generated_PD_walk.npz"):
+def save_generated_to_npz(full_seq_pose, full_seq_trans, output_dir, filename="generated_PD_walk.npz"):
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     full_path = out_path / filename
 
-    pose_np = full_seq_6d.squeeze(0).cpu().detach().numpy() # (Total_T, 24, 6)
+    pose_np = full_seq_pose.squeeze(0).cpu().detach().numpy() # (Total_T, 24, D)
     trans_np = full_seq_trans.squeeze(0).cpu().detach().numpy() # (Total_T, 3)
 
     np.savez(full_path, pose=pose_np, trans=trans_np)
