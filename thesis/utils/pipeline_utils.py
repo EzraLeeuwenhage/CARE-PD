@@ -15,11 +15,11 @@ from thesis.src.evaluate_h36m import H36MEvaluator
 from thesis.src.evaluate_smpl import SMPLEvaluator
 from thesis.src.evaluate_distributions import DistributionComparator
 
-from thesis.utils.visualize_h36m_metric_dist import (
+from thesis.utils.visualize_metrics.visualize_h36m_metric_dist import (
     plot_dataset_summary_stats, plot_pd_feature_violins, plot_pd_feature_comparison_plots,
     prepare_dataframe, prepare_combined_dataframe
 )
-from thesis.utils.visualize_smpl_metric_dist import (
+from thesis.utils.visualize_metrics.visualize_smpl_metric_dist import (
     plot_smpl_mpjae, plot_arm_swing_metrics, plot_sparc_metrics
 )
 
