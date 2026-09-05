@@ -5,8 +5,8 @@ from torch.utils.data import Dataset, DataLoader
 from collections import defaultdict
 import random
 
-class SMPL3DDataset(Dataset):
-    """Base dataset class for 3D Axis-Angle Flow Matching models."""
+class SMPLDataset(Dataset):
+    """Base dataset class for Flow Matching models."""
     def __init__(self, cfg, mode='train'):
         super().__init__()
         self.mode = mode
@@ -22,7 +22,7 @@ class SMPL3DDataset(Dataset):
         eval_split = self.cfg['training'].get('eval_split', 0.1)
         test_split = self.cfg['training'].get('test_split', 0.2)
 
-        # Load the 3D representation
+        # Load the SMPL representation irrespective of 3D or 6D representation
         with np.load(self.cfg['data']['smpl_path'], allow_pickle=True) as npz:
             raw_data = {k: np.array(v) for k, v in npz.items()}
 
@@ -166,7 +166,7 @@ class SMPL3DDataset(Dataset):
         key, start_idx = self.window_indices[idx]
         end_idx = start_idx + self.window_size
         
-        # 3D data natively has shape (T, 24, 3), no slicing needed beyond indexing
+        # Data shape (T, 24, D)
         pose_window = torch.tensor(self.pose_data[key][start_idx:end_idx], dtype=torch.float32)
         trans_window = torch.tensor(self.trans_data[key][start_idx:end_idx], dtype=torch.float32)
         
@@ -177,12 +177,12 @@ class SMPL3DDataset(Dataset):
         severity_tensor = torch.tensor(severity_score, dtype=torch.long)
         return prefix, target, severity_tensor
 
-class JointSMPL3DDataset(SMPL3DDataset):
+class JointSMPLDataset(SMPLDataset):
     def __init__(self, cfg, mode='train', num_classes=4):
         super().__init__(cfg, mode=mode)
         self.num_classes = num_classes
 
-class OverfitSMPL3DDataset(SMPL3DDataset):
+class OverfitSMPLDataset(SMPLDataset):
     def __init__(self, cfg, mode='train'):
         super().__init__(cfg, mode='train')
         target_sev = cfg['training'].get('overfit_severity_class', 0)
@@ -195,7 +195,7 @@ class OverfitSMPL3DDataset(SMPL3DDataset):
         self.window_indices = [single_window] * dummy_epoch_size
         print(f"\n[OVERFIT MODE] Locked to chunk -> {single_window[0]} (Start: {single_window[1]}) | Class: {target_sev} | Seed: {seed}")
 
-class JointOverfitSMPL3DDataset(JointSMPL3DDataset):
+class JointOverfitSMPLDataset(JointSMPLDataset):
     def __init__(self, cfg, mode='train', num_classes=4):
         super().__init__(cfg, mode='train', num_classes=num_classes)
         target_sev = cfg['training'].get('overfit_severity_class', 0)
@@ -214,14 +214,14 @@ def get_dataloader(cfg, mode='train', is_joint_model_train=False):
     
     if is_overfit:
         if is_joint_model_train and mode == 'train':
-            dataset = JointOverfitSMPL3DDataset(cfg, mode=mode, num_classes=cfg['model'].get('num_classes', 4))
+            dataset = JointOverfitSMPLDataset(cfg, mode=mode, num_classes=cfg['model'].get('num_classes', 4))
         else:
-            dataset = OverfitSMPL3DDataset(cfg, mode=mode)
+            dataset = OverfitSMPLDataset(cfg, mode=mode)
     else:
         if is_joint_model_train and mode == 'train':
-            dataset = JointSMPL3DDataset(cfg, mode=mode, num_classes=cfg['model'].get('num_classes', 4))
+            dataset = JointSMPLDataset(cfg, mode=mode, num_classes=cfg['model'].get('num_classes', 4))
         else:
-            dataset = SMPL3DDataset(cfg, mode=mode)
+            dataset = SMPLDataset(cfg, mode=mode)
     
     return DataLoader(
         dataset,

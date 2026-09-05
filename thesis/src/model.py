@@ -27,20 +27,21 @@ class SinusoidalEmbedding(nn.Module):
         return embedding
 
 class FlowHead(nn.Module):
-    def __init__(self, hidden_dim, target_frames, num_joints):
+    def __init__(self, hidden_dim, target_frames, num_joints, pose_dim):
         super().__init__()
         self.target_frames = target_frames
         self.num_joints = num_joints
+        self.pose_dim = pose_dim
         
-        self.target_dim = (self.target_frames * self.num_joints * 3) + (self.target_frames * 3)
+        self.target_dim = (self.target_frames * self.num_joints * self.pose_dim) + (self.target_frames * 3)
         self.net = nn.Linear(hidden_dim, self.target_dim)
 
     def forward(self, shared_latent):
         u_pred_flat = self.net(shared_latent)
         batch_size = u_pred_flat.shape[0]
         
-        pose_size = self.target_frames * self.num_joints * 3
-        u_pred_pose = u_pred_flat[:, :pose_size].reshape(batch_size, self.target_frames, self.num_joints, 3)
+        pose_size = self.target_frames * self.num_joints * self.pose_dim
+        u_pred_pose = u_pred_flat[:, :pose_size].reshape(batch_size, self.target_frames, self.num_joints, self.pose_dim)
         u_pred_trans = u_pred_flat[:, pose_size:].reshape(batch_size, self.target_frames, 3)
         return {'pose': u_pred_pose, 'trans': u_pred_trans}
 
@@ -74,12 +75,15 @@ class ConditionalBaselineBackbone(nn.Module):
         self.target_frames = self.cfg['windowing']['total_window_size'] - self.cfg['windowing']['prefix_length']
         self.prefix_frames = self.cfg['windowing']['prefix_length']
         self.num_joints = self.cfg['data']['num_joints']
+        
+        representation = self.cfg['data'].get('representation', '6D')
+        self.pose_dim = 3 if representation == '3D' else 6
 
         self.time_embed = SinusoidalEmbedding(time_embed_dim)
         self.class_embed = SinusoidalEmbedding(class_embed_dim)
 
-        target_dim = (self.target_frames * self.num_joints * 3) + (self.target_frames * 3)
-        prefix_dim = (self.prefix_frames * self.num_joints * 3) + (self.prefix_frames * 3)
+        target_dim = (self.target_frames * self.num_joints * self.pose_dim) + (self.target_frames * 3)
+        prefix_dim = (self.prefix_frames * self.num_joints * self.pose_dim) + (self.prefix_frames * 3)
         input_dim = target_dim + prefix_dim + class_embed_dim + time_embed_dim
         
         self.net = nn.Sequential(
@@ -131,7 +135,7 @@ class ConditionalBaselineModel(pl.LightningModule):
         time_embed_dim = cfg['model'].get('time_embed_dim', 64)
         
         self.backbone = ConditionalBaselineBackbone(cfg, hidden_dim, class_embed_dim, time_embed_dim)
-        self.flow_head = FlowHead(hidden_dim, self.backbone.target_frames, self.backbone.num_joints)
+        self.flow_head = FlowHead(hidden_dim, self.backbone.target_frames, self.backbone.num_joints, self.backbone.pose_dim)
         self.evaluator = SMPLEvaluator()
 
     def forward(self, x_tau_dict, prefix_dict, tau, severity_score):
@@ -210,7 +214,7 @@ class JointBaselineModel(ConditionalBaselineModel):
         time_embed_dim = cfg['model'].get('time_embed_dim', 64)
         
         self.backbone = JointBaselineBackbone(cfg, hidden_dim, class_embed_dim, time_embed_dim)
-        self.flow_head = FlowHead(hidden_dim, self.backbone.target_frames, self.backbone.num_joints)
+        self.flow_head = FlowHead(hidden_dim, self.backbone.target_frames, self.backbone.num_joints, self.backbone.pose_dim)
         self.jump_head = JumpHead(hidden_dim, num_classes=self.num_classes)
 
     def forward(self, x_tau_dict, prefix_dict, t, y_tau):

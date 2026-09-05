@@ -15,7 +15,8 @@ from thesis.src.evaluate_h36m import H36MEvaluator
 from thesis.src.evaluate_smpl import SMPLEvaluator
 from thesis.src.evaluate_distributions import DistributionComparator
 from thesis.src.generate_prior import generate_prior_from_prefix
-from thesis.utils.pipeline_utils import forward_3d_to_h36m, batched_3d_to_h36m
+from thesis.utils.geometry_utils import forward_to_h36m, batched_to_h36m
+
 from thesis.utils.visualize_h36m_metric_dist import (
     plot_dataset_summary_stats, plot_pd_feature_violins,
     plot_pd_feature_comparison_plots, prepare_dataframe, prepare_combined_dataframe
@@ -23,7 +24,7 @@ from thesis.utils.visualize_h36m_metric_dist import (
 from thesis.utils.visualize_smpl_metric_dist import (
     plot_smpl_mpjae, plot_arm_swing_metrics, plot_sparc_metrics
 )
-from thesis.utils.render_h36m_gif import render_three_way_gif
+from thesis.utils.rendering.render_h36m_gif import render_three_way_gif
 
 class EpochAndValPrintCallback(Callback):
     def __init__(self, train_interval, val_interval):
@@ -120,7 +121,7 @@ class WandBEvaluationCallback(Callback):
         if self.gt_pose_dict is None:
             self.gt_pose_dict, self.gt_h36m_dict, self.gt_key_to_severity = {}, {}, {}
     
-            gt_h36m_all = batched_3d_to_h36m(
+            gt_h36m_all = batched_to_h36m(
                 data_dict["gt"]["pose"], data_dict["gt"]["trans"], self.smpl_model, self.h36m_regressor, pl_module.device
             )
             for i, gt_sev in enumerate(data_dict["severities"]):
@@ -131,7 +132,7 @@ class WandBEvaluationCallback(Callback):
                 self.gt_h36m_dict[seq_key] = gt_h36m_all[i]
             self.gt_h36m_data, _ = self.h36m_evaluator.evaluate_from_memory(self.gt_h36m_dict, self.gt_key_to_severity)
 
-        gen_h36m_all = batched_3d_to_h36m(
+        gen_h36m_all = batched_to_h36m(
             data_dict["gen"]["pose"], data_dict["gen"]["trans"], self.smpl_model, self.h36m_regressor, pl_module.device
         )
         for i, gen_sev in enumerate(gen_sevs_list):
@@ -204,9 +205,9 @@ class WandBEvaluationCallback(Callback):
             gen_full_pose = torch.cat([anchor_data["prefix"]['pose'], gen_suffix['pose']], dim=1)[0]
             gen_full_trans = torch.cat([anchor_data["prefix"]['trans'], gen_suffix['trans']], dim=1)[0]
             
-            seq_gt = forward_3d_to_h36m(gt_full_pose, gt_full_trans, self.smpl_model, self.h36m_regressor, pl_module.device)
-            seq_prior = forward_3d_to_h36m(prior_full_pose, prior_full_trans, self.smpl_model, self.h36m_regressor, pl_module.device)
-            seq_gen = forward_3d_to_h36m(gen_full_pose, gen_full_trans, self.smpl_model, self.h36m_regressor, pl_module.device)
+            seq_gt = forward_to_h36m(gt_full_pose, gt_full_trans, self.smpl_model, self.h36m_regressor, pl_module.device)
+            seq_prior = forward_to_h36m(prior_full_pose, prior_full_trans, self.smpl_model, self.h36m_regressor, pl_module.device)
+            seq_gen = forward_to_h36m(gen_full_pose, gen_full_trans, self.smpl_model, self.h36m_regressor, pl_module.device)
             
             gif_path = self.vis_dir / f"anchor_class_{sev_val}_epoch_{epoch}.gif"
             render_three_way_gif(seq_gt, seq_prior, seq_gen, sev_val, gif_path, elev=55, azim=55, roll=135, gen_severity=gen_sev_val)

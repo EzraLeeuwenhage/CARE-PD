@@ -10,33 +10,17 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 
-from thesis.src.legacy_6d.callbacks import EpochAndValPrintCallback, WandBEvaluationCallback
-from thesis.src.legacy_6d.model import ConditionalBaselineModel, JointBaselineModel
-from thesis.src.legacy_6d.dataloader import get_dataloader
-from thesis.src.legacy_6d.sample import generate_trajectories
-from thesis.utils.pipeline_utils import (
-    load_config, 
-    format_and_convert, 
-    evaluate_pipeline,
-    import_pipeline_components
-)
-
+from thesis.src.callbacks import EpochAndValPrintCallback, WandBEvaluationCallback
+from thesis.src.model import ConditionalBaselineModel, JointBaselineModel
+from thesis.src.dataloader import get_dataloader
+from thesis.src.sample import generate_trajectories
+from thesis.utils.pipeline_utils import load_config, format_and_convert, evaluate_pipeline
 
 CONFIG_PATH = "thesis/configs/baseline_3d.yaml"
 
 
 if __name__ == "__main__":
     cfg = load_config(CONFIG_PATH)
-
-    representation = cfg['data'].get('representation', '6D')
-    (
-        ConditionalBaselineModel, 
-        JointBaselineModel, 
-        get_dataloader, 
-        EpochAndValPrintCallback, 
-        WandBEvaluationCallback, 
-        generate_trajectories
-    ) = import_pipeline_components(representation)
 
     model_name = cfg['model'].get('name', 'GenerativeModel')
     is_joint_model = cfg['model'].get('is_joint_model', False)
@@ -145,7 +129,7 @@ if __name__ == "__main__":
                 json.dump({"test_label_accuracy": float(test_label_acc)}, f, indent=4)
         
         print("\n--- PHASE 3: FORMAT CONVERSION ---")
-        paths = format_and_convert(data_dict, cfg, rep=representation, is_joint_model=is_joint_model)
+        paths = format_and_convert(data_dict, cfg, is_joint_model=is_joint_model)
 
         print("\n--- PHASE 4: EVALUATION ---")
         evaluate_pipeline(paths, is_joint_model=is_joint_model, min_z_travel=min_z_travel)

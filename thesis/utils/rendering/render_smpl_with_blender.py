@@ -17,7 +17,6 @@ and routes the execution accordingly.
 """
 
 import sys
-import os
 import argparse
 import subprocess
 import numpy as np

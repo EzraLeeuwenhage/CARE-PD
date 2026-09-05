@@ -6,13 +6,11 @@ from pathlib import Path
 from scipy.spatial.transform import Rotation
 from scipy.signal import find_peaks
 from sklearn.decomposition import PCA
-from thesis.src.care_pd.conversion_utils import axis_angle_to_matrix
+from thesis.utils.geometry_utils import pose_to_rmat
 
 class SMPLEvaluator:
     def __init__(self, fps=30):
-        """Evaluator for SMPL pose sequences using Geodesic Distance on SO(3).
-        Supports both 3D Axis-Angle and 6D Continuous Rotation inputs.
-        """
+        """Evaluator for SMPL pose sequences using Geodesic Distance on SO(3)."""
         self.fps = fps
         # Standard 24 SMPL model joint names ordered by index
         self.JOINT_NAMES = [
@@ -40,41 +38,6 @@ class SMPLEvaluator:
     # ---------
     # MPJAE
     # ---------
-    def _to_rmat(self, pose_tensor):
-        """Converts either 3D axis-angle or 6D continuous rotations to (T, 3, 3) rotation matrices.
-        
-        Dynamically infers the representation based on the last dimension size.
-        Supports batched training tensors (B, T, J, D) or single sequences (T, J, D).
-        """
-        if isinstance(pose_tensor, np.ndarray):
-            pose_tensor = torch.tensor(pose_tensor, dtype=torch.float32)
-
-        # 25th joint shouldn't exist during evaluation
-        if pose_tensor.shape[-2] == 25:
-            pose_tensor = pose_tensor[..., :24, :]
-            
-        dim = pose_tensor.shape[-1]
-        
-        if dim == 3:
-            return axis_angle_to_matrix(pose_tensor)
-            
-        elif dim == 6:
-            # Gram-Schmidt Orthogonalization
-            v1 = pose_tensor[..., :3]
-            v2 = pose_tensor[..., 3:]
-            
-            x = torch.nn.functional.normalize(v1, dim=-1)
-            y_raw = v2 - (torch.sum(x * v2, dim=-1, keepdim=True) * x)
-            y = torch.nn.functional.normalize(y_raw, dim=-1)
-            z = torch.cross(x, y, dim=-1)
-            
-            # Stack into (T, 3, 3) rotation matrices using rows
-            rot_mats = torch.stack([x, y, z], dim=-2)
-            return rot_mats
-            
-        else:
-            raise ValueError(f"Expected last dimension to be 3 (axis-angle) or 6 (continuous), got {dim}")
-
     @torch.no_grad()
     def compute_mpjae(self, gt_pose, gen_pose, return_per_joint=False):
         """Computes the Mean Per Joint Angular Error (MPJAE) using Geodesic Distance.
@@ -85,8 +48,8 @@ class SMPLEvaluator:
             return_per_joint: If True, returns array of shape (24,) with error per joint.
                               If False, returns overall scalar float (radians).
         """
-        R_gt = self._to_rmat(gt_pose)   
-        R_gen = self._to_rmat(gen_pose) 
+        R_gt = pose_to_rmat(gt_pose)   
+        R_gen = pose_to_rmat(gen_pose) 
 
         # Truncate to the length of the shortest sequence along the Temporal (T) dimension
         # In a (B, T, J, 3, 3) tensor, T is at index -4. In a (T, J, 3, 3) tensor, T is at -3.
@@ -195,9 +158,9 @@ class SMPLEvaluator:
         Asymmetry is the absolute difference between L and R mean ROM.
 
         Args:
-            seq_pose: numpy array or tensor of shape (T, 24, D) where D is 3 or 6
+            seq_pose: numpy array or tensor of shape (T, 24, D)
         """
-        R_seq = self._to_rmat(seq_pose).numpy()
+        R_seq = pose_to_rmat(seq_pose).numpy()
         
         L_shoulder_idx = self.JOINT_NAMES.index('L_Shoulder')
         R_shoulder_idx = self.JOINT_NAMES.index('R_Shoulder')
@@ -258,7 +221,7 @@ class SMPLEvaluator:
 
     def compute_sparc_for_sequence(self, seq_pose, plot_joint=None, plot_prefix=""):
         """Extracts angular velocity magnitude and computes SPARC for all 24 joints."""
-        rot_mats = self._to_rmat(seq_pose).numpy()
+        rot_mats = self.pose_to_rmat(seq_pose).numpy()
         T, J, _, _ = rot_mats.shape
         if T < 2:
             return np.full(J, np.nan)
