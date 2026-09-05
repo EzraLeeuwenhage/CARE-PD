@@ -6,7 +6,7 @@ from pathlib import Path
 from scipy.spatial.transform import Rotation
 from scipy.signal import find_peaks
 from sklearn.decomposition import PCA
-from thesis.utils.geometry_utils import pose_to_rmat
+from thesis.src.utils.geometry_utils import pose_to_rmat
 
 class SMPLEvaluator:
     def __init__(self, fps=30):

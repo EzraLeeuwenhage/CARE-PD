@@ -15,16 +15,16 @@ from thesis.src.evaluate_h36m import H36MEvaluator
 from thesis.src.evaluate_smpl import SMPLEvaluator
 from thesis.src.evaluate_distributions import DistributionComparator
 from thesis.src.generate_prior import generate_prior_from_prefix
-from thesis.utils.geometry_utils import forward_to_h36m, batched_to_h36m
+from thesis.src.utils.geometry_utils import forward_to_h36m, batched_to_h36m
 
-from thesis.utils.visualize_metrics.visualize_h36m_metric_dist import (
+from thesis.src.utils.visualize_metrics.visualize_h36m_metric_dist import (
     plot_dataset_summary_stats, plot_pd_feature_violins,
     plot_pd_feature_comparison_plots, prepare_dataframe, prepare_combined_dataframe
 )
-from thesis.utils.visualize_metrics.visualize_smpl_metric_dist import (
+from thesis.src.utils.visualize_metrics.visualize_smpl_metric_dist import (
     plot_smpl_mpjae, plot_arm_swing_metrics, plot_sparc_metrics
 )
-from thesis.utils.rendering.render_h36m_gif import render_three_way_gif
+from thesis.src.utils.rendering.render_h36m_gif import render_three_way_gif
 
 
 class EpochAndValPrintCallback(Callback):

@@ -8,18 +8,18 @@ from sklearn.metrics import confusion_matrix
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-from thesis.utils.sixD2smpl import build_smpl_pkl_from_6d_smpl
-from thesis.utils.threeD2smpl import build_smpl_pkl_from_3d_smpl
+from thesis.src.utils.sixD2smpl import build_smpl_pkl_from_6d_smpl
+from thesis.src.utils.threeD2smpl import build_smpl_pkl_from_3d_smpl
 from thesis.src.care_pd.smpl2h36m import convert_smpl_to_h36m
 from thesis.src.evaluate_h36m import H36MEvaluator
 from thesis.src.evaluate_smpl import SMPLEvaluator
 from thesis.src.evaluate_distributions import DistributionComparator
 
-from thesis.utils.visualize_metrics.visualize_h36m_metric_dist import (
+from thesis.src.utils.visualize_metrics.visualize_h36m_metric_dist import (
     plot_dataset_summary_stats, plot_pd_feature_violins, plot_pd_feature_comparison_plots,
     prepare_dataframe, prepare_combined_dataframe
 )
-from thesis.utils.visualize_metrics.visualize_smpl_metric_dist import (
+from thesis.src.utils.visualize_metrics.visualize_smpl_metric_dist import (
     plot_smpl_mpjae, plot_arm_swing_metrics, plot_sparc_metrics
 )
 

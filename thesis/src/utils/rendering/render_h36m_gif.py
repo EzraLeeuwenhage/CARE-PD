@@ -7,7 +7,8 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import torch
 
-from thesis.utils.pipeline_utils import build_smpl_pkl_from_6d_smpl, convert_smpl_to_h36m
+from thesis.src.care_pd.smpl2h36m import convert_smpl_to_h36m
+from thesis.src.utils.pipeline_utils import build_smpl_pkl_from_6d_smpl
 from thesis.src.generate_prior import generate_prior_from_prefix
 
 h36m_joint_paths = [

@@ -48,9 +48,9 @@ def generate_prior_from_prefix(prefix_dict, target_dict, s_scale=1.0):
 
 
 if __name__ == "__main__":
-    from thesis.utils.pipeline_utils import load_config
-    from thesis.src.legacy_6d.old_dataloader import get_dataloader
-    from thesis.utils.sixD2smpl import build_smpl_pkl_from_6d_smpl
+    from thesis.src.utils.pipeline_utils import load_config
+    from thesis.src.dataloader import get_dataloader
+    from thesis.src.utils.sixD2smpl import build_smpl_pkl_from_6d_smpl
     from thesis.src.care_pd.smpl2h36m import convert_smpl_to_h36m
 
     print("Initializing Dataloader...")

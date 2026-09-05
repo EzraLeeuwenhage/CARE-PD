@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from smplx.lbs import vertices2joints
 from thesis.src.care_pd.conversion_utils import axis_angle_to_matrix
-from thesis.utils.sixD2smpl import convert_6d_to_smpl
+from thesis.src.utils.sixD2smpl import convert_6d_to_smpl
 
 def gram_schmidt_to_rmat(pose_tensor):
     """

@@ -14,7 +14,7 @@ from thesis.src.callbacks import EpochAndValPrintCallback, WandBEvaluationCallba
 from thesis.src.model import ConditionalBaselineModel, JointBaselineModel
 from thesis.src.dataloader import get_dataloader
 from thesis.src.sample import generate_trajectories
-from thesis.utils.pipeline_utils import load_config, format_and_convert, evaluate_pipeline
+from thesis.src.utils.pipeline_utils import load_config, format_and_convert, evaluate_pipeline
 
 CONFIG_PATH = "thesis/configs/baseline_3d.yaml"
 
