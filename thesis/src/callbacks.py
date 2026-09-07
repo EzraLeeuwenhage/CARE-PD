@@ -2,6 +2,7 @@ import numpy as np
 from pathlib import Path
 from collections import defaultdict
 import random
+import time
 
 import torch
 import wandb
@@ -94,6 +95,8 @@ class WandBEvaluationCallback(Callback):
         if not is_baseline and epoch % self.eval_interval != 0:
             return
         
+        val_start_time = time.time()
+        
         if not self.anchors:
             self._sample_anchors(trainer, pl_module)
 
@@ -104,12 +107,15 @@ class WandBEvaluationCallback(Callback):
         print(f"\n--- [W&B Callback] Running Validation (Epoch {display_epoch}) ---")
 
         val_loader = trainer.val_dataloaders[0] if isinstance(trainer.val_dataloaders, list) else trainer.val_dataloaders
+        
+        gen_start = time.time()
         data_dict = generate_trajectories(
             model=pl_module, dataloader=val_loader, 
             num_steps=self.cfg['sampling']['num_steps'], device=pl_module.device, 
             max_batches=self.cfg['training'].get('eval_batches', -1),
             desc=f"W&B Eval Ep {display_epoch}", is_joint_model=self.is_joint_model,
         )
+        print(f"  [Time] Trajectory Generation: {time.time() - gen_start:.2f}s")
 
         is_overfit = self.cfg['training'].get('overfit_severity_class', -1) >= 0
 
@@ -124,20 +130,26 @@ class WandBEvaluationCallback(Callback):
 
         # Evaluate distributions
         if not is_overfit:
+            conv_start = time.time()
             memory_data = format_and_convert(data_dict, self.cfg, self.is_joint_model, save_to_disk=False)
+            print(f"  [Time] SMPL to H36M Batch Conversion: {time.time() - conv_start:.2f}s")
+
+            metric_start = time.time()
             min_z = self.cfg['windowing'].get('min_z_travel', 0.5)
-            
             memory_data["out_dir"] = self.cache_dir
+            
             dist_metrics, vis_dir = evaluate_and_plot_distributions(
                 memory_data, min_z, self.is_joint_model, step_name=f"Epoch {display_epoch}"
             )
+            print(f"  [Time] Metric Extraction & Plots: {time.time() - metric_start:.2f}s")
+
             wandb_logs.update(dist_metrics)
-            
             if wandb.run is not None:
                 for img_path in vis_dir.glob("*.png"):
                     wandb_logs[f"eval_visuals/{img_path.stem}"] = wandb.Image(str(img_path))
 
         # Render Anchor GIFs
+        gif_start = time.time()
         self.smpl_model = self.smpl_model.to(pl_module.device)
         self.h36m_regressor = self.h36m_regressor.to(pl_module.device)
         
@@ -168,9 +180,12 @@ class WandBEvaluationCallback(Callback):
             gif_path = self.vis_dir / f"anchor_class_{sev_val}_epoch_{display_epoch}.gif"
             render_three_way_gif(seq_gt, seq_prior, seq_gen, sev_val, gif_path, elev=55, azim=55, roll=135, gen_severity=gen_sev_val)
             gif_paths.append(gif_path)
+        print(f"  [Time] Anchor GIF Rendering: {time.time() - gif_start:.2f}s")
 
         # Log all metrics and GIFs to W&B
         if wandb.run is not None:
             for p in gif_paths:
                 wandb_logs[f"eval_videos/{p.stem}"] = wandb.Video(str(p), format="gif")
             trainer.logger.experiment.log(wandb_logs, step=trainer.global_step)
+
+        print(f"  [Time] TOTAL Validation Routine: {time.time() - val_start_time:.2f}s\n")
