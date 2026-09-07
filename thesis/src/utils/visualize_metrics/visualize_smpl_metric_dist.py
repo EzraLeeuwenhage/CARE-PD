@@ -213,7 +213,7 @@ def plot_arm_swing_metrics(data, output_dir, distances_df=None):
     if distances_df is not None:
         # Retrieve the auto-scaled Y limits that already include the KDE tails
         y_min_auto, y_max_auto = ax.get_ylim()
-        y_range = y_max_auto - y_min_auto
+        y_range = max(y_max_auto - y_min_auto, 1e-5)
         
         # Add padding to the top for the balloons, keeping the bottom KDE tail intact
         ax.set_ylim(y_min_auto, y_max_auto + (y_range * 0.20))
@@ -310,7 +310,7 @@ def plot_sparc_metrics(data, output_dir, distances_df=None):
             if distances_df is not None:
                 y_max = df_joint["SPARC"].max()
                 y_min = df_joint["SPARC"].min()
-                y_range = y_max - y_min
+                y_range = max(y_max - y_min, 1e-5)
                 
                 # Pad top by 25% and bottom by 5% to ensure balloons and fliers fit
                 ax.set_ylim(y_min - (y_range * 0.05), y_max + (y_range * 0.25))
@@ -419,7 +419,7 @@ def plot_sparc_metrics(data, output_dir, distances_df=None):
         if distances_df is not None:
             y_max = df_legs["SPARC"].max()
             y_min = df_legs["SPARC"].min()
-            y_range = y_max - y_min
+            y_range = max(y_max - y_min, 1e-5)
             axes[1].set_ylim(y_min - (y_range * 0.05), y_max + (y_range * 0.35))
 
             x_ticks = [l.get_text() for l in axes[1].get_xticklabels()]
@@ -540,7 +540,6 @@ if __name__ == "__main__":
                 gt_comp[c_key]["Right Arm ROM"] = np.array(np.degrees(metrics.get("GT_ROM_R", [])))
                 gen_comp[c_key]["Right Arm ROM"] = np.array(np.degrees(metrics.get("Gen_ROM_R", [])))
                 
-                # The explicit np.array cast added here!
                 gt_comp[c_key]["Swing Asymmetry (SI)"] = np.array(metrics.get("GT_Symmetry_Index", []))
                 gen_comp[c_key]["Swing Asymmetry (SI)"] = np.array(metrics.get("Gen_Symmetry_Index", []))
                 

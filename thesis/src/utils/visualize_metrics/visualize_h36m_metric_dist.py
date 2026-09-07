@@ -239,8 +239,8 @@ def plot_pd_feature_comparison_plots(df, distances_df, output_dir):
         # Calculate text placement bounds based on actual data min/max
         y_max = df[key].max()
         y_min = df[key].min()
+        y_range = max(y_max - y_min, 1e-5)
 
-        y_range = y_max - y_min
         # Increase top padding to make room for text balloons higher up
         ax.set_ylim(y_min - (y_range * 0.05), y_max + (y_range * 0.35))
 

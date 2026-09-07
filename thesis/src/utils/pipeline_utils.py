@@ -156,7 +156,9 @@ def evaluate_and_plot_distributions(memory_data, min_z_travel=0.5, is_joint_mode
         "eval_metrics/Mean_KS_H36M": float(h36m_dist_df["KS_Stat"].mean()),
         "eval_metrics/Mean_Hellinger_SMPL": float(smpl_dist_df["Hellinger"].mean()),
         "eval_metrics/Mean_KS_SMPL": float(smpl_dist_df["KS_Stat"].mean()),
+        "physical_realism/mean_floating_gt": float(np.nanmean(gt_h36m_data["overall"]["floating"])),
         "physical_realism/mean_floating_gen": float(np.nanmean(gen_h36m_data["overall"]["floating"])),
+        "physical_realism/mean_foot_disp_gt": float(np.nanmean(gt_h36m_data["overall"]["mean_stance_displacement"])),
         "physical_realism/mean_foot_disp_gen": float(np.nanmean(gen_h36m_data["overall"]["mean_stance_displacement"])),
     }
         

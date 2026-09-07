@@ -55,6 +55,10 @@ class WandBEvaluationCallback(Callback):
         self.is_joint_model = cfg['model'].get('is_joint_model', False)
         self.anchors = {}
         
+        self.cache_dir = Path(cfg['paths']['output_dir']) / "wandb_eval_cache"
+        self.vis_dir = self.cache_dir / "visualizations"
+        self.vis_dir.mkdir(parents=True, exist_ok=True)
+        
         self.smpl_model = SMPL(model_path='thesis/data/care_pd_preprocessing/SMPL_NEUTRAL.pkl', num_betas=10).eval()
         self.h36m_regressor = torch.tensor(np.load('thesis/data/care_pd_preprocessing/J_regressor_h36m_correct.npy'), dtype=torch.float32)
         self.smpl_evaluator = SMPLEvaluator(fps=30)
@@ -82,6 +86,10 @@ class WandBEvaluationCallback(Callback):
         epoch = trainer.current_epoch + 1
         if trainer.sanity_checking or epoch % self.eval_interval != 0: return
         
+        # Clear out old visuals in cache
+        for old_file in self.vis_dir.glob("*"):
+            old_file.unlink()
+        
         display_epoch = 0 if trainer.global_step == 0 else epoch
         print(f"\n--- [W&B Callback] Running Validation (Epoch {display_epoch}) ---")
 
@@ -107,9 +115,10 @@ class WandBEvaluationCallback(Callback):
             memory_data = format_and_convert(data_dict, self.cfg, self.is_joint_model, save_to_disk=False)
             min_z = self.cfg['windowing'].get('min_z_travel', 0.5)
             
+            memory_data["out_dir"] = self.cache_dir
             dist_metrics, vis_dir = evaluate_and_plot_distributions(memory_data, min_z, self.is_joint_model, step_name=f"Epoch {display_epoch}")
             
-            # Update payload with heavy metrics and images
+            # Log distribution metrics to W&B
             wandb_logs.update(dist_metrics)
             if wandb.run is not None:
                 for img_path in vis_dir.glob("*.png"):
@@ -143,9 +152,7 @@ class WandBEvaluationCallback(Callback):
             seq_prior = forward_to_h36m(prior_full_pose, prior_full_trans, self.smpl_model, self.h36m_regressor, pl_module.device)
             seq_gen = forward_to_h36m(gen_full_pose, gen_full_trans, self.smpl_model, self.h36m_regressor, pl_module.device)
             
-            import tempfile
-            temp_dir = Path(tempfile.gettempdir())
-            gif_path = temp_dir / f"anchor_class_{sev_val}_epoch_{display_epoch}.gif"
+            gif_path = self.vis_dir / f"anchor_class_{sev_val}_epoch_{display_epoch}.gif"
             render_three_way_gif(seq_gt, seq_prior, seq_gen, sev_val, gif_path, elev=55, azim=55, roll=135, gen_severity=gen_sev_val)
             gif_paths.append(gif_path)
 
@@ -153,10 +160,4 @@ class WandBEvaluationCallback(Callback):
         if wandb.run is not None:
             for p in gif_paths:
                 wandb_logs[f"eval_videos/{p.stem}"] = wandb.Video(str(p), format="gif")
-            wandb.log(wandb_logs)
-            
-        for p in gif_paths: p.unlink()
-        
-        if not is_overfit:
-            for p in vis_dir.glob("*.png"): p.unlink()
-            vis_dir.rmdir()
+            trainer.logger.experiment.log(wandb_logs, step=trainer.global_step)

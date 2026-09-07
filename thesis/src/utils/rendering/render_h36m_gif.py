@@ -8,7 +8,7 @@ from matplotlib.animation import FuncAnimation
 import torch
 
 from thesis.src.care_pd.smpl2h36m import convert_smpl_to_h36m
-from thesis.src.utils.pipeline_utils import build_smpl_pkl_from_6d_smpl
+from thesis.src.utils.smpl_io import save_smpl_pkl
 from thesis.src.generate_prior import generate_prior_from_prefix
 
 h36m_joint_paths = [
@@ -180,7 +180,6 @@ if __name__ == "__main__":
     gt_h36m_data = np.load(gt_h36m_path, allow_pickle=True)
     gen_h36m_data = np.load(gen_h36m_path, allow_pickle=True)
     
-    # Handle dict unwrapping
     gt_6d_data = gt_6d_data['arr_0'].item() if 'arr_0' in gt_6d_data.files else {k: gt_6d_data[k] for k in gt_6d_data.files}
     gt_h36m_data = gt_h36m_data['arr_0'].item() if 'arr_0' in gt_h36m_data.files else {k: gt_h36m_data[k] for k in gt_h36m_data.files}
     gen_h36m_data = gen_h36m_data['arr_0'].item() if 'arr_0' in gen_h36m_data.files else {k: gen_h36m_data[k] for k in gen_h36m_data.files}
@@ -188,7 +187,7 @@ if __name__ == "__main__":
     with open(labels_path, 'r') as f:
         labels = json.load(f)["key_to_severity"]
         
-    # Grab the first available sequence pair
+    # Use the first sequence pair
     gen_key = list(gen_h36m_data.keys())[0]
     idx_str = gen_key.split('_')[-1] 
     gt_h36m_key = f"GT__gt_{idx_str}"
@@ -196,27 +195,27 @@ if __name__ == "__main__":
     
     print(f"\nExtracting Prior for sequence: {gt_6d_key}")
     
-    # 1. Extract 6D Prefix and Target from the Ground Truth
+    # Extract 6D Prefix and Target from the Ground Truth
     prefix_length = 15 
-    gt_pose = torch.tensor(gt_6d_data[gt_6d_key]).unsqueeze(0)        # (1, T, 24, 6)
+    gt_pose = torch.tensor(gt_6d_data[gt_6d_key]).unsqueeze(0)  # (1, T, 24, 6)
     gt_trans = torch.tensor(gt_6d_data[f"{gt_6d_key}_trans"]).unsqueeze(0)  # (1, T, 3)
     
     prefix_dict = {'pose': gt_pose[:, :prefix_length], 'trans': gt_trans[:, :prefix_length]}
     target_dict = {'pose': gt_pose[:, prefix_length:], 'trans': gt_trans[:, prefix_length:]}
     
-    # 2. Generate the 6D FM Prior (x_0)
+    # Generate the 6D FM Prior (x_0)
     x_0_dict = generate_prior_from_prefix(prefix_dict, target_dict)
     
     # 3. Concatenate Prefix + Prior to get the full timeline
     prior_full_pose = torch.cat([prefix_dict['pose'], x_0_dict['pose']], dim=1)
     prior_full_trans = torch.cat([prefix_dict['trans'], x_0_dict['trans']], dim=1)
     
-    # 4. Push through the SMPL -> H36M conversion pipeline
+    # Push through the SMPL -> H36M conversion pipeline
     print("Converting 6D Prior -> SMPL -> H36M...")
-    build_smpl_pkl_from_6d_smpl(prior_full_pose, prior_full_trans, str(temp_prior_pkl), "PRIOR", "prior")
+    save_smpl_pkl(prior_full_pose, prior_full_trans, str(temp_prior_pkl), "PRIOR", "prior")
     convert_smpl_to_h36m(str(temp_prior_pkl), str(temp_prior_npz.parent), temp_prior_npz.name)
     
-    # 5. Load the newly created 3D H36M Prior
+    # Load the newly created 3D H36M Prior
     prior_h36m_data = np.load(temp_prior_npz, allow_pickle=True)
     prior_h36m_data = prior_h36m_data['arr_0'].item() if 'arr_0' in prior_h36m_data.files else {k: prior_h36m_data[k] for k in prior_h36m_data.files}
     prior_h36m_key = list(prior_h36m_data.keys())[0]
@@ -234,6 +233,6 @@ if __name__ == "__main__":
     render_three_way_gif(seq_gt, seq_prior, seq_gen, severity, out_gif, fps=15, elev=55, azim=55, roll=135)
     print(f"Successfully saved 3-Way test GIF to: {out_gif}")
     
-    # Cleanup temporary files
+    # Cleanup
     temp_prior_pkl.unlink(missing_ok=True)
     temp_prior_npz.unlink(missing_ok=True)

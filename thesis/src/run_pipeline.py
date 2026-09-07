@@ -37,6 +37,14 @@ if __name__ == "__main__":
         save_dir=str(out_dir_path),
         config=cfg
     )
+
+    # Define quantity for steps axis for W&B plots
+    wandb_logger.experiment.define_metric("epoch")
+    wandb_logger.experiment.define_metric("val/*", step_metric="epoch")
+    wandb_logger.experiment.define_metric("eval_metrics/*", step_metric="epoch")
+    wandb_logger.experiment.define_metric("physical_realism/*", step_metric="epoch")
+    wandb_logger.experiment.define_metric("eval_videos/*", step_metric="epoch")
+    wandb_logger.experiment.define_metric("eval_visuals/*", step_metric="epoch")
     
     print(f"\nStarting model train-test pipeline for '{model_name}' (Joint Model: {is_joint_model})...")
 
@@ -122,7 +130,7 @@ if __name__ == "__main__":
         if wandb_logger.experiment is not None:
             for img_path in vis_dir.glob("*.png"):
                 dist_metrics[f"eval_visuals/{img_path.stem}"] = wandb.Image(str(img_path))
-            wandb_logger.experiment.log(dist_metrics)
+            wandb_logger.experiment.log(dist_metrics, step=trainer.global_step)
     else: 
         print("[OVERFIT MODE] Skipping Test Generation and Evaluation.")
 

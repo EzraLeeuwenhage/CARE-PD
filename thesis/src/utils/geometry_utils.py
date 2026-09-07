@@ -66,26 +66,25 @@ def forward_to_h36m(pose_tensor, trans, smpl_model, h36m_regressor, device):
     to 3D H36M coordinates. Executes entirely in memory without intermediate files.
     """
     dim = pose_tensor.shape[-1]
+    
     if dim == 6:
-        smpl_pose = convert_6d_to_smpl(pose_tensor)
-        if torch.is_tensor(smpl_pose):
-            smpl_pose = smpl_pose.detach().cpu().numpy()
+        # 6D conversion currently requires Numpy/Scipy, so go to CPU
+        smpl_pose = torch.as_tensor(convert_6d_to_smpl(pose_tensor), dtype=torch.float32, device=device)
     elif dim == 3:
-        smpl_pose = pose_tensor.detach().cpu().numpy() if torch.is_tensor(pose_tensor) else pose_tensor
+        # remain on GPU for axis-angle to rotation matrix conversion
+        smpl_pose = torch.as_tensor(pose_tensor, dtype=torch.float32, device=device)
     else:
         raise ValueError(f"Unknown pose dimension {dim}")
         
     T = smpl_pose.shape[0]
     
-    # Extract global orientation and body pose, format for SMPL layer
-    global_orient = torch.as_tensor(smpl_pose[:, 0:1, :], dtype=torch.float32, device=device).reshape(T, -1)
-    body_pose     = torch.as_tensor(smpl_pose[:, 1:24, :], dtype=torch.float32, device=device).reshape(T, -1)
+    global_orient = smpl_pose[:, 0:1, :].reshape(T, -1)
+    body_pose     = smpl_pose[:, 1:24, :].reshape(T, -1)
     world_trans_t = torch.as_tensor(trans, dtype=torch.float32, device=device)
     
-    # Create neutral shape/expression placeholders
-    betas = torch.zeros((T, 10)).to(device)
-    zero_pose = torch.zeros((T, 3)).to(device)
-    zero_hand = torch.zeros((T, 15, 3)).to(device)
+    betas = torch.zeros((T, 10), device=device)
+    zero_pose = torch.zeros((T, 3), device=device)
+    zero_hand = torch.zeros((T, 15, 3), device=device)
 
     with torch.no_grad():
         out = smpl_model(betas=betas, body_pose=body_pose, global_orient=global_orient,
