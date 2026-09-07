@@ -14,7 +14,7 @@ from thesis.src.sample import generate_trajectories
 from thesis.src.evaluate_smpl import SMPLEvaluator
 from thesis.src.generate_prior import generate_prior_from_prefix
 from thesis.src.utils.geometry_utils import forward_to_h36m
-from thesis.src.utils.pipeline_utils import format_and_convert, evaluate_and_plot_distributions
+from thesis.src.utils.pipeline_utils import format_and_convert, evaluate_and_plot_distributions, plot_physical_realism_tracking
 from thesis.src.utils.rendering.render_h36m_gif import render_three_way_gif
 
 
@@ -55,6 +55,12 @@ class WandBEvaluationCallback(Callback):
         self.eval_interval = eval_interval
         self.is_joint_model = cfg['model'].get('is_joint_model', False)
         self.anchors = {}
+        
+        self.val_epochs = []
+        self.floating_gen_hist = []
+        self.floating_gt_hist = []
+        self.foot_disp_gen_hist = []
+        self.foot_disp_gt_hist = []
         
         self.cache_dir = Path(cfg['paths']['output_dir']) / "wandb_eval_cache"
         self.vis_dir = self.cache_dir / "visualizations"
@@ -143,8 +149,20 @@ class WandBEvaluationCallback(Callback):
             )
             print(f"  [Time] Metric Extraction & Plots: {time.time() - metric_start:.2f}s")
 
+            self.val_epochs.append(display_epoch)
+            self.floating_gt_hist.append(dist_metrics["physical_realism/mean_floating_gt"])
+            self.floating_gen_hist.append(dist_metrics["physical_realism/mean_floating_gen"])
+            self.foot_disp_gt_hist.append(dist_metrics["physical_realism/mean_foot_disp_gt"])
+            self.foot_disp_gen_hist.append(dist_metrics["physical_realism/mean_foot_disp_gen"])
+
+            tracking_path = plot_physical_realism_tracking(
+                self.val_epochs, self.floating_gt_hist, self.floating_gen_hist,
+                self.foot_disp_gt_hist, self.foot_disp_gen_hist, self.vis_dir
+            )
+
             wandb_logs.update(dist_metrics)
             if wandb.run is not None:
+                wandb_logs["eval_visuals/physical_realism_tracking"] = wandb.Image(str(tracking_path))
                 for img_path in vis_dir.glob("*.png"):
                     wandb_logs[f"eval_visuals/{img_path.stem}"] = wandb.Image(str(img_path))
 
