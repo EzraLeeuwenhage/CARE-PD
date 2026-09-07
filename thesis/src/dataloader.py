@@ -183,7 +183,7 @@ class SMPLDataset(Dataset):
         
         # Sliced to 24 joints here to drop the empty 25th padding joint.
         # Data natively has shape (T, 24, D)
-        pose_window = torch.tensor(self.pose_data[key][start_idx:end_idx, :24, :], dtype=torch.float32)
+        pose_window = torch.tensor(self.pose_data[key][start_idx:end_idx], dtype=torch.float32)
         trans_window = torch.tensor(self.trans_data[key][start_idx:end_idx], dtype=torch.float32)
         
         prefix = {'pose': pose_window[:self.prefix_length], 'trans': trans_window[:self.prefix_length]}
