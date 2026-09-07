@@ -17,7 +17,9 @@ from thesis.src.model import ConditionalBaselineModel, JointBaselineModel
 from thesis.src.dataloader import get_dataloader
 from thesis.src.evaluate_smpl import SMPLEvaluator
 from thesis.src.sample import generate_trajectories
-from thesis.src.utils.pipeline_utils import load_config, format_and_convert, evaluate_and_plot_distributions
+from thesis.src.utils.pipeline_utils import (
+    load_config, format_and_convert, evaluate_and_plot_distributions
+)
 
 CONFIG_PATH = "thesis/configs/baseline_3d.yaml"
 
@@ -40,14 +42,6 @@ if __name__ == "__main__":
         config=cfg
     )
 
-    # Define quantity for steps axis for W&B plots
-    wandb_logger.experiment.define_metric("epoch")
-    wandb_logger.experiment.define_metric("val/*", step_metric="epoch")
-    wandb_logger.experiment.define_metric("eval_metrics/*", step_metric="epoch")
-    wandb_logger.experiment.define_metric("physical_realism/*", step_metric="epoch")
-    wandb_logger.experiment.define_metric("eval_videos/*", step_metric="epoch")
-    wandb_logger.experiment.define_metric("eval_visuals/*", step_metric="epoch")
-    
     print(f"\nStarting model train-test pipeline for '{model_name}' (Joint Model: {is_joint_model})...")
 
     if not is_joint_model:
@@ -127,12 +121,9 @@ if __name__ == "__main__":
         smpl_evaluator = SMPLEvaluator()
         mpjae_rad = smpl_evaluator.compute_mpjae(data_dict["gt"]["pose"], data_dict["gen"]["pose"])
         dist_metrics["test_metrics/Overall_MPJAE_deg"] = mpjae_rad * (180.0 / np.pi)
+        dist_metrics["test_metrics/label_accuracy"] = test_label_acc
 
         if wandb_logger.experiment is not None:
-            best_ckpt_name = Path(best_model_path).stem
-            best_epoch = int(best_ckpt_name.split('-')[1]) 
-            wandb_logger.experiment.summary["best_epoch"] = best_epoch + 1
-
             for img_path in vis_dir.glob("*.png"):
                 dist_metrics[f"test_visuals/{img_path.stem}"] = wandb.Image(str(img_path))
             

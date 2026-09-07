@@ -202,8 +202,9 @@ class WandBEvaluationCallback(Callback):
 
         # Log all metrics and GIFs to W&B
         if wandb.run is not None:
-            for p in gif_paths:
-                wandb_logs[f"eval_videos/{p.stem}"] = wandb.Video(str(p), format="gif")
+            for p, sev_val in zip(gif_paths, self.anchors.keys()):
+                wandb_logs[f"eval_videos/anchor_class_{sev_val}"] = wandb.Video(str(p), format="gif")
+                 
             trainer.logger.experiment.log(wandb_logs, step=trainer.global_step)
 
         print(f"  [Time] TOTAL Validation Routine: {time.time() - val_start_time:.2f}s\n")

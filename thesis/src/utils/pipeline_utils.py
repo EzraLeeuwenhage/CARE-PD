@@ -170,14 +170,13 @@ def evaluate_and_plot_distributions(memory_data, min_z_travel=0.5, is_joint_mode
         
     return metrics_dict, vis_out_dir
 
-
 def plot_physical_realism_tracking(val_epochs, floating_gt, floating_gen, foot_disp_gt, foot_disp_gen, out_dir):
     """Generates a Matplotlib tracked history plot over all epochs."""
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     
     axes[0].plot(val_epochs, floating_gt, color='cornflowerblue', linestyle='--', linewidth=2.5, label='Ground Truth Baseline')
     axes[0].plot(val_epochs, floating_gen, color='salmon', linestyle='-', linewidth=2.5, label='Generated Model')
-    axes[0].set_title("Floating / Skating over Epochs", fontsize=13, fontweight='bold')
+    axes[0].set_title("Floating over Epochs", fontsize=13, fontweight='bold')
     axes[0].set_xlabel("Epoch", fontweight='bold')
     axes[0].set_ylabel("Mean Floating (m)", fontweight='bold')
     axes[0].legend()
@@ -185,7 +184,7 @@ def plot_physical_realism_tracking(val_epochs, floating_gt, floating_gen, foot_d
 
     axes[1].plot(val_epochs, foot_disp_gt, color='cornflowerblue', linestyle='--', linewidth=2.5, label='Ground Truth Baseline')
     axes[1].plot(val_epochs, foot_disp_gen, color='salmon', linestyle='-', linewidth=2.5, label='Generated Model')
-    axes[1].set_title("Foot Displacement over Epochs", fontsize=13, fontweight='bold')
+    axes[1].set_title("Foot Displacement (Skating) over Epochs", fontsize=13, fontweight='bold')
     axes[1].set_xlabel("Epoch", fontweight='bold')
     axes[1].set_ylabel("Mean Displacement (m)", fontweight='bold')
     axes[1].legend()
