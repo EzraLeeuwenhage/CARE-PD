@@ -1,7 +1,6 @@
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-import json
 import numpy as np
 from pathlib import Path
 
@@ -14,7 +13,7 @@ from thesis.src.callbacks import EpochAndValPrintCallback, WandBEvaluationCallba
 from thesis.src.model import ConditionalBaselineModel, JointBaselineModel
 from thesis.src.dataloader import get_dataloader
 from thesis.src.sample import generate_trajectories
-from thesis.src.utils.pipeline_utils import load_config, format_and_convert, evaluate_pipeline
+from thesis.src.utils.pipeline_utils import load_config, format_and_convert, evaluate_and_log_distributions
 
 CONFIG_PATH = "thesis/configs/baseline_3d.yaml"
 
@@ -36,11 +35,6 @@ if __name__ == "__main__":
         save_dir=str(out_dir_path),
         config=cfg
     )
-
-    # Set default x-axis and slider key to epoch
-    wandb_logger.experiment.define_metric("epoch")
-    wandb_logger.experiment.define_metric("eval_videos/*", step_metric="epoch")
-    wandb_logger.experiment.define_metric("eval_visuals/*", step_metric="epoch")
     
     print(f"\nStarting model train-test pipeline for '{model_name}' (Joint Model: {is_joint_model})...")
 
@@ -61,22 +55,15 @@ if __name__ == "__main__":
     val_interval = cfg['training'].get('val_interval', 10)
     wandb_val_interval = cfg['training'].get('wandb_val_interval', 50)
 
-    print_callback = EpochAndValPrintCallback(
-        train_interval=log_interval, 
-        val_interval=val_interval
-    )
-    
-    wandb_eval_callback = WandBEvaluationCallback(
-        cfg=cfg, 
-        eval_interval=wandb_val_interval
-    )
+    print_callback = EpochAndValPrintCallback(train_interval=log_interval, val_interval=val_interval)
+    wandb_eval_callback = WandBEvaluationCallback(cfg=cfg, eval_interval=wandb_val_interval)
     
     checkpoint_callback = ModelCheckpoint(
-        monitor="val/mpjae_rad", 
+        monitor="val/mpjae_deg", 
         mode="min", 
         save_top_k=1,
-        dirpath=str(Path(cfg['paths']['output_dir']) / "checkpoints"),
-        filename=f"best-{{epoch:02d}}-{{val/mpjae_rad:.4f}}"
+        dirpath=str(out_dir_path / "checkpoints"),
+        filename=f"best-{{epoch:02d}}-{{val/mpjae_deg:.2f}}"
     )
 
     trainer = pl.Trainer(
@@ -90,13 +77,15 @@ if __name__ == "__main__":
         check_val_every_n_epoch=val_interval,
     )
 
+    print("\n--- PHASE 0: BASELINE EVALUATION ---")
+    trainer.validate(model, dataloaders=eval_loader)
+
     print("\n--- PHASE 1: TRAINING ---")
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=eval_loader)
 
     print("\n--- PHASE 2: DATASET GENERATION ---")
     best_model_path = checkpoint_callback.best_model_path
 
-    # only execute model evaluation if not overfitting on single sequence
     if overfit_severity_class == -1:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -104,35 +93,20 @@ if __name__ == "__main__":
         best_model = model_class.load_from_checkpoint(best_model_path, cfg=cfg).to(device)
         
         data_dict = generate_trajectories(
-            model=best_model, 
-            dataloader=test_loader, 
-            num_steps=cfg['sampling']['num_steps'], 
-            device=device,
-            max_batches=-1,
-            desc="Generating Final Test Set", 
-            is_joint_model=is_joint_model,
+            model=best_model, dataloader=test_loader, num_steps=cfg['sampling']['num_steps'], 
+            device=device, max_batches=-1, desc="Generating Final Test Set", is_joint_model=is_joint_model,
         )
 
         if is_joint_model:
-            print("\n--- PHASE 2.5: CONDITIONAL ADHERENCE (LABEL ACCURACY) ---")
             gt_sevs = np.array(data_dict["severities"])
             gen_sevs = np.array(data_dict["gen_severities"])
-            
             test_label_acc = np.mean(gt_sevs == gen_sevs)
-            correct_matches = np.sum(gt_sevs == gen_sevs)
-            
-            print(f"Final Test Label Accuracy: {test_label_acc:.4f} ({correct_matches}/{len(gt_sevs)} matches)")
-            
-            eval_dir = Path(cfg['paths']['output_dir']) / "evaluation"
-            eval_dir.mkdir(parents=True, exist_ok=True)
-            with open(eval_dir / "test_label_accuracy.json", "w") as f:
-                json.dump({"test_label_accuracy": float(test_label_acc)}, f, indent=4)
+            print(f"Final Test Label Accuracy: {test_label_acc:.4f} ({np.sum(gt_sevs == gen_sevs)}/{len(gt_sevs)} matches)")
         
-        print("\n--- PHASE 3: FORMAT CONVERSION ---")
-        paths = format_and_convert(data_dict, cfg, is_joint_model=is_joint_model)
-
-        print("\n--- PHASE 4: EVALUATION ---")
-        evaluate_pipeline(paths, is_joint_model=is_joint_model, min_z_travel=min_z_travel)
+        print("\n--- PHASE 3: FINAL TEST EVALUATION & DISK STORAGE ---")
+        # Save output strictly for the final test set
+        memory_data = format_and_convert(data_dict, cfg, is_joint_model=is_joint_model, save_to_disk=True)
+        evaluate_and_log_distributions(memory_data, min_z_travel=min_z_travel, is_joint_model=is_joint_model, step_name="Final Test", upload_to_wandb=True)
     else: 
         print("[OVERFIT MODE] Skipping Test Generation and Evaluation.")
 
