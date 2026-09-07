@@ -140,14 +140,20 @@ def evaluate_and_plot_distributions(memory_data, min_z_travel=0.5, is_joint_mode
         y_pred = [v for k, v in memory_data["gen_key_to_severity"].items() if k.startswith("seq_")]
         plt.figure(figsize=(6, 5))
         sns.heatmap(confusion_matrix(y_true, y_pred, labels=[0, 1, 2, 3]), annot=True, fmt='d', cmap='Blues', xticklabels=[0, 1, 2, 3], yticklabels=[0, 1, 2, 3])
-        plt.title('Joint Model Label Confusion Matrix'); plt.tight_layout()
+        plt.title('Actual Label vs Predicted Label Correlation', fontsize=12, fontweight='bold')
+        plt.xlabel('Predicted Label', fontsize=11, fontweight='bold')
+        plt.ylabel('Actual Label', fontsize=11, fontweight='bold')
+        plt.tight_layout()
         plt.savefig(vis_out_dir / "label_confusion_matrix.png", dpi=300); plt.close()
 
         prior_sevs = memory_data.get("prior_severities", None)
         if prior_sevs:
             plt.figure(figsize=(6, 5))
             sns.heatmap(confusion_matrix(prior_sevs, y_pred, labels=[0, 1, 2, 3]), annot=True, fmt='d', cmap='Oranges', xticklabels=[0, 1, 2, 3], yticklabels=[0, 1, 2, 3])
-            plt.title('Prior State vs Predicted Label Correlation'); plt.tight_layout()
+            plt.title('Prior State vs Predicted Label Correlation', fontsize=12, fontweight='bold')
+            plt.xlabel('Predicted Label', fontsize=11, fontweight='bold')
+            plt.ylabel('Prior State (Jump Start)', fontsize=11, fontweight='bold')
+            plt.tight_layout()
             plt.savefig(vis_out_dir / "prior_state_correlation_matrix.png", dpi=300); plt.close()
 
     # Return metrics dictionary for logging
@@ -163,3 +169,31 @@ def evaluate_and_plot_distributions(memory_data, min_z_travel=0.5, is_joint_mode
     }
         
     return metrics_dict, vis_out_dir
+
+
+def plot_physical_realism_tracking(val_epochs, floating_gt, floating_gen, foot_disp_gt, foot_disp_gen, out_dir):
+    """Generates a Matplotlib tracked history plot over all epochs."""
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    
+    axes[0].plot(val_epochs, floating_gt, color='cornflowerblue', linestyle='--', linewidth=2.5, label='Ground Truth Baseline')
+    axes[0].plot(val_epochs, floating_gen, color='salmon', linestyle='-', linewidth=2.5, label='Generated Model')
+    axes[0].set_title("Floating / Skating over Epochs", fontsize=13, fontweight='bold')
+    axes[0].set_xlabel("Epoch", fontweight='bold')
+    axes[0].set_ylabel("Mean Floating (m)", fontweight='bold')
+    axes[0].legend()
+    axes[0].grid(True, linestyle='--', alpha=0.6)
+
+    axes[1].plot(val_epochs, foot_disp_gt, color='cornflowerblue', linestyle='--', linewidth=2.5, label='Ground Truth Baseline')
+    axes[1].plot(val_epochs, foot_disp_gen, color='salmon', linestyle='-', linewidth=2.5, label='Generated Model')
+    axes[1].set_title("Foot Displacement over Epochs", fontsize=13, fontweight='bold')
+    axes[1].set_xlabel("Epoch", fontweight='bold')
+    axes[1].set_ylabel("Mean Displacement (m)", fontweight='bold')
+    axes[1].legend()
+    axes[1].grid(True, linestyle='--', alpha=0.6)
+
+    plt.tight_layout()
+    tracking_path = Path(out_dir) / "physical_realism_tracking.png"
+    plt.savefig(tracking_path, dpi=300)
+    plt.close()
+    
+    return tracking_path
