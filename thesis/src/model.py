@@ -183,7 +183,8 @@ class ConditionalBaselineModel(pl.LightningModule):
         self.save_hyperparameters()
         self.cfg = cfg
         self.lr = cfg['training']['learning_rate']
-        self.loss_weight = cfg['training'].get('loss_weight', 0.5)
+        self.lambda_pose = cfg['training'].get('lambda_pose', 1.0)
+        self.lambda_trans = cfg['training'].get('lambda_trans', 1.0)
         self.num_steps = cfg['sampling'].get('num_steps', 100)
         
         hidden_dim = cfg['model'].get('hidden_dim', 1024)
@@ -244,7 +245,7 @@ class ConditionalBaselineModel(pl.LightningModule):
         u_pred_dict = self(x_tau_dict, prefix_dict, tau, severity_score)
         loss_pose = F.mse_loss(u_pred_dict['pose'], u_true_dict['pose'])
         loss_trans = F.mse_loss(u_pred_dict['trans'], u_true_dict['trans'])
-        loss_total = ((1.0 - self.loss_weight) * loss_pose) + (self.loss_weight * loss_trans)
+        loss_total = (self.lambda_pose * loss_pose) + (self.lambda_trans * loss_trans)
         
         self.log("train/loss_pose", loss_pose, on_step=False, on_epoch=True)
         self.log("train/loss_trans", loss_trans, on_step=False, on_epoch=True)
@@ -367,7 +368,7 @@ class JointBaselineModel(ConditionalBaselineModel):
         # Calculate Conditional FM Loss (Motion)
         loss_pose = F.mse_loss(u_pred_dict['pose'], u_target_dict['pose'])
         loss_trans = F.mse_loss(u_pred_dict['trans'], u_target_dict['trans'])
-        loss_motion = loss_pose + loss_trans
+        loss_motion = (self.lambda_pose * loss_pose) + (self.lambda_trans * loss_trans)
         
         # Calculate Conditional GM Jump Loss
         # uses CrossEntropy as a Bregman divergence replacement for categorical target prediction (Holderrieth et al.)

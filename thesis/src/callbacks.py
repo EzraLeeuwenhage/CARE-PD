@@ -63,10 +63,12 @@ class WandBEvaluationCallback(Callback):
         self.h36m_regressor = torch.tensor(np.load('thesis/data/care_pd_preprocessing/J_regressor_h36m_correct.npy'), dtype=torch.float32)
         self.smpl_evaluator = SMPLEvaluator(fps=30)
 
-    def on_train_start(self, trainer, pl_module):
+    def _sample_anchors(self, trainer, pl_module):
+        """Samples and caches 1 anchor sequence per class."""
         val_loader = trainer.val_dataloaders
         if isinstance(val_loader, list): val_loader = val_loader[0]
         
+        print("\n[W&B Callback] Sampling Anchor Sequences across Severity Classes...")
         candidates = defaultdict(list)
         for prefix, target, severity in val_loader:
             for b_idx in range(severity.shape[0]):
@@ -81,27 +83,37 @@ class WandBEvaluationCallback(Callback):
             targ_single = {k: v.to(pl_module.device) for k, v in targ_single.items()}
             x_0 = generate_prior_from_prefix(pref_single, targ_single)
             self.anchors[sev_val] = {"prefix": pref_single, "x_0": x_0, "target": targ_single, "severity": sev_val}
+            print(f"  -> Locked Random Anchor for Severity Class {sev_val}")
 
     def on_validation_epoch_end(self, trainer, pl_module):
-        epoch = trainer.current_epoch + 1
-        if trainer.sanity_checking or epoch % self.eval_interval != 0: return
+        if trainer.sanity_checking: return
         
-        # Clear out old visuals in cache
+        epoch = trainer.current_epoch + 1
+        is_baseline = (trainer.global_step == 0)
+        
+        if not is_baseline and epoch % self.eval_interval != 0:
+            return
+        
+        if not self.anchors:
+            self._sample_anchors(trainer, pl_module)
+
         for old_file in self.vis_dir.glob("*"):
             old_file.unlink()
         
-        display_epoch = 0 if trainer.global_step == 0 else epoch
+        display_epoch = 0 if is_baseline else epoch
         print(f"\n--- [W&B Callback] Running Validation (Epoch {display_epoch}) ---")
 
+        val_loader = trainer.val_dataloaders[0] if isinstance(trainer.val_dataloaders, list) else trainer.val_dataloaders
         data_dict = generate_trajectories(
-            model=pl_module, dataloader=trainer.val_dataloaders[0] if isinstance(trainer.val_dataloaders, list) else trainer.val_dataloaders, 
-            num_steps=self.cfg['sampling']['num_steps'], device=pl_module.device, max_batches=self.cfg['training'].get('eval_batches', -1),
+            model=pl_module, dataloader=val_loader, 
+            num_steps=self.cfg['sampling']['num_steps'], device=pl_module.device, 
+            max_batches=self.cfg['training'].get('eval_batches', -1),
             desc=f"W&B Eval Ep {display_epoch}", is_joint_model=self.is_joint_model,
         )
 
         is_overfit = self.cfg['training'].get('overfit_severity_class', -1) >= 0
 
-        # Compute MPJAE and log to W&B
+        # Compute MPJAE
         mpjae_rad = self.smpl_evaluator.compute_mpjae(data_dict["gt"]["pose"], data_dict["gen"]["pose"])
         mpjae_deg = mpjae_rad * (180.0 / np.pi)
     
@@ -110,21 +122,22 @@ class WandBEvaluationCallback(Callback):
             "eval_metrics/Overall_MPJAE_deg": mpjae_deg
         }
 
-        # Distribution evaluation        
+        # Evaluate distributions
         if not is_overfit:
             memory_data = format_and_convert(data_dict, self.cfg, self.is_joint_model, save_to_disk=False)
             min_z = self.cfg['windowing'].get('min_z_travel', 0.5)
             
             memory_data["out_dir"] = self.cache_dir
-            dist_metrics, vis_dir = evaluate_and_plot_distributions(memory_data, min_z, self.is_joint_model, step_name=f"Epoch {display_epoch}")
-            
-            # Log distribution metrics to W&B
+            dist_metrics, vis_dir = evaluate_and_plot_distributions(
+                memory_data, min_z, self.is_joint_model, step_name=f"Epoch {display_epoch}"
+            )
             wandb_logs.update(dist_metrics)
+            
             if wandb.run is not None:
                 for img_path in vis_dir.glob("*.png"):
                     wandb_logs[f"eval_visuals/{img_path.stem}"] = wandb.Image(str(img_path))
 
-        # Generate GIFs for each anchor severity class
+        # Render Anchor GIFs
         self.smpl_model = self.smpl_model.to(pl_module.device)
         self.h36m_regressor = self.h36m_regressor.to(pl_module.device)
         

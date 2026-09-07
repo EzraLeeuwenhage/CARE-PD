@@ -5,6 +5,8 @@ import numpy as np
 from pathlib import Path
 
 import torch
+torch.set_float32_matmul_precision('high')
+
 import wandb
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
@@ -88,7 +90,7 @@ if __name__ == "__main__":
     )
 
     print("\n--- PHASE 0: BASELINE EVALUATION ---")
-    trainer.validate(model, dataloaders=eval_loader)
+    trainer.validate(model, dataloaders=eval_loader, verbose=False)
 
     print("\n--- PHASE 1: TRAINING ---")
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=eval_loader)
