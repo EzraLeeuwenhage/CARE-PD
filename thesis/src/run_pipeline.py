@@ -126,12 +126,16 @@ if __name__ == "__main__":
 
         smpl_evaluator = SMPLEvaluator()
         mpjae_rad = smpl_evaluator.compute_mpjae(data_dict["gt"]["pose"], data_dict["gen"]["pose"])
-        dist_metrics["eval_metrics/Overall_MPJAE_deg"] = mpjae_rad * (180.0 / np.pi)
+        dist_metrics["test_metrics/Overall_MPJAE_deg"] = mpjae_rad * (180.0 / np.pi)
 
-        # Log to W&B
         if wandb_logger.experiment is not None:
+            best_ckpt_name = Path(best_model_path).stem
+            best_epoch = int(best_ckpt_name.split('-')[1]) 
+            wandb_logger.experiment.summary["best_epoch"] = best_epoch + 1
+
             for img_path in vis_dir.glob("*.png"):
-                dist_metrics[f"eval_visuals/{img_path.stem}"] = wandb.Image(str(img_path))
+                dist_metrics[f"test_visuals/{img_path.stem}"] = wandb.Image(str(img_path))
+            
             wandb_logger.experiment.log(dist_metrics, step=trainer.global_step)
     else: 
         print("[OVERFIT MODE] Skipping Test Generation and Evaluation.")

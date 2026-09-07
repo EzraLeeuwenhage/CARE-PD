@@ -1,5 +1,5 @@
 model:
-  name: "test-Joint-MLP-Baseline-3D"
+  name: "test-v2-Joint-MLP-Baseline-3D"
   is_joint_model: true
   hidden_dim: 1024
   class_embed_dim: 64
@@ -45,7 +45,7 @@ training:
   lambda_label: 1.0       # (Joint Model) Loss multiplier for discrete CTMC jump rate matrix
 
 sampling:
-  num_steps: 20
+  num_steps: 100
 
 paths:
   weights_dir: "thesis/data/checkpoints"
