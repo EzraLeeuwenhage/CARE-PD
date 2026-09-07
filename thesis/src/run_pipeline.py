@@ -5,6 +5,7 @@ import numpy as np
 from pathlib import Path
 
 import torch
+import wandb
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -12,8 +13,9 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from thesis.src.callbacks import EpochAndValPrintCallback, WandBEvaluationCallback
 from thesis.src.model import ConditionalBaselineModel, JointBaselineModel
 from thesis.src.dataloader import get_dataloader
+from thesis.src.evaluate_smpl import SMPLEvaluator
 from thesis.src.sample import generate_trajectories
-from thesis.src.utils.pipeline_utils import load_config, format_and_convert, evaluate_and_log_distributions
+from thesis.src.utils.pipeline_utils import load_config, format_and_convert, evaluate_and_plot_distributions
 
 CONFIG_PATH = "thesis/configs/baseline_3d.yaml"
 
@@ -104,9 +106,23 @@ if __name__ == "__main__":
             print(f"Final Test Label Accuracy: {test_label_acc:.4f} ({np.sum(gt_sevs == gen_sevs)}/{len(gt_sevs)} matches)")
         
         print("\n--- PHASE 3: FINAL TEST EVALUATION & DISK STORAGE ---")
-        # Save output strictly for the final test set
         memory_data = format_and_convert(data_dict, cfg, is_joint_model=is_joint_model, save_to_disk=True)
-        evaluate_and_log_distributions(memory_data, min_z_travel=min_z_travel, is_joint_model=is_joint_model, step_name="Final Test", upload_to_wandb=True)
+        dist_metrics, vis_dir = evaluate_and_plot_distributions(
+            memory_data, 
+            min_z_travel=min_z_travel, 
+            is_joint_model=is_joint_model, 
+            step_name="Final Test"
+        )
+
+        smpl_evaluator = SMPLEvaluator()
+        mpjae_rad = smpl_evaluator.compute_mpjae(data_dict["gt"]["pose"], data_dict["gen"]["pose"])
+        dist_metrics["eval_metrics/Overall_MPJAE_deg"] = mpjae_rad * (180.0 / np.pi)
+
+        # Log to W&B
+        if wandb_logger.experiment is not None:
+            for img_path in vis_dir.glob("*.png"):
+                dist_metrics[f"eval_visuals/{img_path.stem}"] = wandb.Image(str(img_path))
+            wandb_logger.experiment.log(dist_metrics)
     else: 
         print("[OVERFIT MODE] Skipping Test Generation and Evaluation.")
 

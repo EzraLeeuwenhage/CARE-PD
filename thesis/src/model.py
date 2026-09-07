@@ -261,9 +261,10 @@ class ConditionalBaselineModel(pl.LightningModule):
         gt_pose = torch.cat([prefix_dict['pose'], target_dict['pose']], dim=1).cpu()
         gen_pose = torch.cat([prefix_dict['pose'], gen_suffix['pose']], dim=1).cpu()
 
-        val_mpjae = self.evaluator.compute_mpjae(gt_pose, gen_pose)
-        self.log("val/mpjae_rad", val_mpjae, on_step=False, on_epoch=True, sync_dist=True)
-        return val_mpjae
+        val_mpjae_rad = self.evaluator.compute_mpjae(gt_pose, gen_pose)
+        val_mpjae_deg = val_mpjae_rad * (180.0 / math.pi)
+        self.log("val/mpjae_deg", val_mpjae_deg, on_step=False, on_epoch=True, sync_dist=True)
+        return val_mpjae_deg
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.lr)
@@ -397,8 +398,10 @@ class JointBaselineModel(ConditionalBaselineModel):
         gt_pose = torch.cat([prefix_dict['pose'], target_dict['pose']], dim=1).cpu()
         gen_pose = torch.cat([prefix_dict['pose'], gen_suffix['pose']], dim=1).cpu()
 
-        val_mpjae = self.evaluator.compute_mpjae(gt_pose, gen_pose)
+        val_mpjae_rad = self.evaluator.compute_mpjae(gt_pose, gen_pose)
+        val_mpjae_deg = val_mpjae_rad * (180.0 / math.pi)
+        self.log("val/mpjae_deg", val_mpjae_deg, on_step=False, on_epoch=True, sync_dist=True)
+
         val_label_acc = (gen_severity == severity_score).float().mean()
-        self.log("val/mpjae_rad", val_mpjae, on_step=False, on_epoch=True, sync_dist=True)
         self.log("val/label_accuracy", val_label_acc, on_step=False, on_epoch=True, sync_dist=True)
-        return val_mpjae, gen_severity
+        return val_mpjae_deg, gen_severity

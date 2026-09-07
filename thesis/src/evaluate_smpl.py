@@ -221,7 +221,7 @@ class SMPLEvaluator:
 
     def compute_sparc_for_sequence(self, seq_pose, plot_joint=None, plot_prefix=""):
         """Extracts angular velocity magnitude and computes SPARC for all 24 joints."""
-        rot_mats = self.pose_to_rmat(seq_pose).numpy()
+        rot_mats = pose_to_rmat(seq_pose).numpy()
         T, J, _, _ = rot_mats.shape
         if T < 2:
             return np.full(J, np.nan)

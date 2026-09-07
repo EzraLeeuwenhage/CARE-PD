@@ -1,19 +1,24 @@
-import torch
-import wandb
-import random
+import numpy as np
 from pathlib import Path
 from collections import defaultdict
+import random
+
+import torch
+import wandb
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import Callback
 from smplx.body_models import SMPL
 
 from thesis.src.sample import generate_trajectories
+from thesis.src.evaluate_smpl import SMPLEvaluator
 from thesis.src.generate_prior import generate_prior_from_prefix
 from thesis.src.utils.geometry_utils import forward_to_h36m
-from thesis.src.utils.pipeline_utils import format_and_convert, evaluate_and_log_distributions
+from thesis.src.utils.pipeline_utils import format_and_convert, evaluate_and_plot_distributions
 from thesis.src.utils.rendering.render_h36m_gif import render_three_way_gif
 
+
 class EpochAndValPrintCallback(Callback):
+    """Custom callback to print train and val metrics at specified epoch intervals."""
     def __init__(self, train_interval, val_interval):
         super().__init__()
         self.train_interval = train_interval
@@ -32,11 +37,14 @@ class EpochAndValPrintCallback(Callback):
         if epoch % self.val_interval == 0:
             mpjae = trainer.callback_metrics.get("val/mpjae_deg")
             acc = trainer.callback_metrics.get("val/label_accuracy")
+            
             mpjae_str = f"{mpjae.item():.2f} deg" if mpjae is not None else "N/A"
+            
             if acc is not None:
                 print(f" >>> VALIDATION Epoch {epoch:04d} | MPJAE: {mpjae_str} | Label Acc: {acc.item():.4f}")
             else:
                 print(f" >>> VALIDATION Epoch {epoch:04d} | MPJAE: {mpjae_str}")
+
 
 class WandBEvaluationCallback(Callback):
     """Evaluates generated distributions and Anchor GIFs entirely in RAM."""
@@ -49,6 +57,7 @@ class WandBEvaluationCallback(Callback):
         
         self.smpl_model = SMPL(model_path='thesis/data/care_pd_preprocessing/SMPL_NEUTRAL.pkl', num_betas=10).eval()
         self.h36m_regressor = torch.tensor(np.load('thesis/data/care_pd_preprocessing/J_regressor_h36m_correct.npy'), dtype=torch.float32)
+        self.smpl_evaluator = SMPLEvaluator(fps=30)
 
     def on_train_start(self, trainer, pl_module):
         val_loader = trainer.val_dataloaders
@@ -73,7 +82,6 @@ class WandBEvaluationCallback(Callback):
         epoch = trainer.current_epoch + 1
         if trainer.sanity_checking or epoch % self.eval_interval != 0: return
         
-        # If this is the pre-training validation pass, log it as Epoch 0
         display_epoch = 0 if trainer.global_step == 0 else epoch
         print(f"\n--- [W&B Callback] Running Validation (Epoch {display_epoch}) ---")
 
@@ -85,13 +93,29 @@ class WandBEvaluationCallback(Callback):
 
         is_overfit = self.cfg['training'].get('overfit_severity_class', -1) >= 0
 
-        # Evaluate and log distributions entirely in memory without saving arrays to disk
+        # Compute MPJAE and log to W&B
+        mpjae_rad = self.smpl_evaluator.compute_mpjae(data_dict["gt"]["pose"], data_dict["gen"]["pose"])
+        mpjae_deg = mpjae_rad * (180.0 / np.pi)
+    
+        wandb_logs = {
+            "epoch": display_epoch,
+            "eval_metrics/Overall_MPJAE_deg": mpjae_deg
+        }
+
+        # Distribution evaluation        
         if not is_overfit:
             memory_data = format_and_convert(data_dict, self.cfg, self.is_joint_model, save_to_disk=False)
             min_z = self.cfg['windowing'].get('min_z_travel', 0.5)
-            evaluate_and_log_distributions(memory_data, min_z, self.is_joint_model, step_name=f"Epoch {display_epoch}", upload_to_wandb=True)
+            
+            dist_metrics, vis_dir = evaluate_and_plot_distributions(memory_data, min_z, self.is_joint_model, step_name=f"Epoch {display_epoch}")
+            
+            # Update payload with heavy metrics and images
+            wandb_logs.update(dist_metrics)
+            if wandb.run is not None:
+                for img_path in vis_dir.glob("*.png"):
+                    wandb_logs[f"eval_visuals/{img_path.stem}"] = wandb.Image(str(img_path))
 
-        # Render Anchor GIFs
+        # Generate GIFs for each anchor severity class
         self.smpl_model = self.smpl_model.to(pl_module.device)
         self.h36m_regressor = self.h36m_regressor.to(pl_module.device)
         
@@ -125,7 +149,14 @@ class WandBEvaluationCallback(Callback):
             render_three_way_gif(seq_gt, seq_prior, seq_gen, sev_val, gif_path, elev=55, azim=55, roll=135, gen_severity=gen_sev_val)
             gif_paths.append(gif_path)
 
+        # Log all metrics and GIFs to W&B
         if wandb.run is not None:
-            wandb.log({f"eval_videos/{p.stem}": wandb.Video(str(p), format="gif") for p in gif_paths})
+            for p in gif_paths:
+                wandb_logs[f"eval_videos/{p.stem}"] = wandb.Video(str(p), format="gif")
+            wandb.log(wandb_logs)
             
         for p in gif_paths: p.unlink()
+        
+        if not is_overfit:
+            for p in vis_dir.glob("*.png"): p.unlink()
+            vis_dir.rmdir()

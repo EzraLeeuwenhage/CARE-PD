@@ -7,7 +7,6 @@ from collections import defaultdict
 from sklearn.metrics import confusion_matrix
 import seaborn as sns
 import matplotlib.pyplot as plt
-import wandb
 
 from smplx.body_models import SMPL
 from thesis.src.evaluate_h36m import H36MEvaluator
@@ -52,7 +51,7 @@ def format_and_convert(data_dict, cfg, is_joint_model=False, save_to_disk=False)
     gt_labels, gen_labels = {"key_to_severity": {}}, {"key_to_severity": {}}
     gen_sevs_list = data_dict["gen_severities"] if is_joint_model else data_dict["severities"]
 
-    device = data_dict["gt"]["pose"].device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     smpl_model = SMPL(model_path='thesis/data/care_pd_preprocessing/SMPL_NEUTRAL.pkl', num_betas=10).eval().to(device)
     h36m_regressor = torch.tensor(np.load('thesis/data/care_pd_preprocessing/J_regressor_h36m_correct.npy'), dtype=torch.float32).to(device)
 
@@ -92,13 +91,13 @@ def format_and_convert(data_dict, cfg, is_joint_model=False, save_to_disk=False)
         "out_dir": out_dir, "prior_severities": data_dict.get("prior_severities", [])
     }
 
-def evaluate_and_log_distributions(memory_data, min_z_travel=0.5, is_joint_model=False, step_name="Validation", upload_to_wandb=True):
-    """Unified Evaluation Engine: Evaluates dictionaries in memory, plots PNGs, and logs directly to W&B."""
+def evaluate_and_plot_distributions(memory_data, min_z_travel=0.5, is_joint_model=False, step_name="Validation"):
+    """Unified Evaluation Engine: Evaluates dictionaries in memory and creates PNGs. Returns metrics dict and image paths."""
     out_dir = memory_data["out_dir"]
     vis_out_dir = out_dir / f"visualizations_{step_name.replace(' ', '_')}"
     vis_out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Evaluate
+    # Evaluating
     h36m_eval = H36MEvaluator(fps=30, min_z_travel=min_z_travel)
     gt_h36m_data, _ = h36m_eval.evaluate_from_memory(memory_data["gt_h36m_dict"], memory_data["gt_key_to_severity"])
     gen_h36m_data, _ = h36m_eval.evaluate_from_memory(memory_data["gen_h36m_dict"], memory_data["gen_key_to_severity"])
@@ -125,7 +124,7 @@ def evaluate_and_log_distributions(memory_data, min_z_travel=0.5, is_joint_model
         
     smpl_dist_df = comparator._format_results_to_dataframe(comparator.compare(gt_comp, gen_comp))
 
-    # Plot
+    # Plotting
     plot_dataset_summary_stats(prepare_dataframe(gt_h36m_data), vis_out_dir, prefix="gt_", dataset_label="Ground Truth Baseline")
     plot_pd_feature_violins(prepare_dataframe(gt_h36m_data), vis_out_dir, prefix="gt_", dataset_label="Ground Truth Baseline")
     plot_dataset_summary_stats(prepare_dataframe(gen_h36m_data), vis_out_dir, prefix="gen_", dataset_label=step_name)
@@ -151,28 +150,14 @@ def evaluate_and_log_distributions(memory_data, min_z_travel=0.5, is_joint_model
             plt.title('Prior State vs Predicted Label Correlation'); plt.tight_layout()
             plt.savefig(vis_out_dir / "prior_state_correlation_matrix.png", dpi=300); plt.close()
 
-    # Log to W&B
-    if upload_to_wandb and wandb.run is not None:
-        mpjae_rad = smpl_summary.get("Overall", {}).get("Overall", 0.0)
-        mpjae_deg = mpjae_rad * (180.0 / np.pi)
-
-        wandb_logs = {
-            "eval_metrics/Overall_MPJAE_deg": mpjae_deg,
-            "eval_metrics/Mean_Hellinger_H36M": float(h36m_dist_df["Hellinger"].mean()),
-            "eval_metrics/Mean_KS_H36M": float(h36m_dist_df["KS_Stat"].mean()),
-            "eval_metrics/Mean_Hellinger_SMPL": float(smpl_dist_df["Hellinger"].mean()),
-            "eval_metrics/Mean_KS_SMPL": float(smpl_dist_df["KS_Stat"].mean()),
-            "physical_realism/mean_floating_gen": float(np.nanmean(gen_h36m_data["overall"]["floating"])),
-            "physical_realism/mean_foot_disp_gen": float(np.nanmean(gen_h36m_data["overall"]["mean_stance_displacement"])),
-        }
+    # Return metrics dictionary for logging
+    metrics_dict = {
+        "eval_metrics/Mean_Hellinger_H36M": float(h36m_dist_df["Hellinger"].mean()),
+        "eval_metrics/Mean_KS_H36M": float(h36m_dist_df["KS_Stat"].mean()),
+        "eval_metrics/Mean_Hellinger_SMPL": float(smpl_dist_df["Hellinger"].mean()),
+        "eval_metrics/Mean_KS_SMPL": float(smpl_dist_df["KS_Stat"].mean()),
+        "physical_realism/mean_floating_gen": float(np.nanmean(gen_h36m_data["overall"]["floating"])),
+        "physical_realism/mean_foot_disp_gen": float(np.nanmean(gen_h36m_data["overall"]["mean_stance_displacement"])),
+    }
         
-        # Upload all generated PNGs
-        for img_path in vis_out_dir.glob("*.png"):
-            wandb_logs[f"eval_visuals/{img_path.stem}"] = wandb.Image(str(img_path))
-            
-        wandb.log(wandb_logs)
-
-    # Clean up disk if not final test
-    if step_name != "Final Test":
-        for f in vis_out_dir.glob("*.png"): f.unlink()
-        vis_out_dir.rmdir()
+    return metrics_dict, vis_out_dir
