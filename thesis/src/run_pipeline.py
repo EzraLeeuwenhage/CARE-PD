@@ -46,14 +46,14 @@ if __name__ == "__main__":
 
     if not is_joint_model:
         model_class = ConditionalBaselineModel
-        train_loader = get_dataloader(cfg, mode='train', is_joint_model_train=False)
-        eval_loader = get_dataloader(cfg, mode='eval', is_joint_model_train=False)
-        test_loader = get_dataloader(cfg, mode='test', is_joint_model_train=False)
+        train_loader = get_dataloader(cfg, mode='train')
+        eval_loader = get_dataloader(cfg, mode='eval')
+        test_loader = get_dataloader(cfg, mode='test')
     else:
         model_class = JointBaselineModel
-        train_loader = get_dataloader(cfg, mode='train', is_joint_model_train=True)
-        eval_loader = get_dataloader(cfg, mode='eval', is_joint_model_train=False)
-        test_loader = get_dataloader(cfg, mode='test', is_joint_model_train=False)
+        train_loader = get_dataloader(cfg, mode='train')
+        eval_loader = get_dataloader(cfg, mode='eval')
+        test_loader = get_dataloader(cfg, mode='test')
 
     model = model_class(cfg)
     
