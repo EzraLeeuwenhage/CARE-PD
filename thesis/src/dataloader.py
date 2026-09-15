@@ -257,6 +257,10 @@ class FullSequenceSMPLDataset(Dataset):
             all_keys=valid_pool_keys, mode=mode, eval_split=eval_split, test_split=test_split
         )
         
+        # Group sequences of similar length for efficient validation/testing batches
+        if self.mode != 'train':
+            self.valid_keys.sort(key=lambda k: self.pose_data[k].shape[0])
+            
         self._print_split_summary(
             mode=mode, seq_stats=seq_stats, total_inspected=len(all_keys),
             discarded_keys=self.discarded_keys, discarded_no_travel=discarded_no_travel

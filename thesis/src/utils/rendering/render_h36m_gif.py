@@ -9,7 +9,7 @@ import torch
 
 from thesis.src.care_pd.smpl2h36m import convert_smpl_to_h36m
 from thesis.src.utils.smpl_io import save_smpl_pkl
-from thesis.src.generate_prior import generate_prior_from_prefix
+from thesis.src.generate_prior import generate_motion_prior_from_prefix
 
 h36m_joint_paths = [
     [10, 9, 8, 7, 0, 1, 2, 3],
@@ -204,7 +204,7 @@ if __name__ == "__main__":
     target_dict = {'pose': gt_pose[:, prefix_length:], 'trans': gt_trans[:, prefix_length:]}
     
     # Generate the 6D FM Prior (x_0)
-    x_0_dict = generate_prior_from_prefix(prefix_dict, target_dict)
+    x_0_dict = generate_motion_prior_from_prefix(prefix_dict, target_dict)
     
     # 3. Concatenate Prefix + Prior to get the full timeline
     prior_full_pose = torch.cat([prefix_dict['pose'], x_0_dict['pose']], dim=1)

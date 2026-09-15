@@ -160,10 +160,12 @@ class JointBaselineModel(ConditionalBaselineModel):
             # Don't sample severity score, MGM-Cond 
             y_tau = severity_score.clone()
             sample_labels = False
+            y_0 = None
         else:
             # sample initial severity score randomly
-            y_tau = torch.randint(0, num_classes, (batch_size,), device=self.device)
+            y_0 = torch.randint(0, num_classes, (batch_size,), device=self.device)
             sample_labels = True
+            y_tau = y_0.clone()
 
         for step in range(num_steps):
             tau = step * dt
@@ -177,7 +179,7 @@ class JointBaselineModel(ConditionalBaselineModel):
             if sample_labels:
                 y_tau = ctmc_jump_step(y_tau, Q_theta, dt, num_classes)
 
-        return x_tau, y_tau
+        return x_tau, y_tau, y_0
 
     def _run_oneshot_inference(self, batch, num_steps=100, force_joint_conditioning=False):
         """Generates the target sequence and discrete labels globally in a single pass."""
@@ -191,9 +193,12 @@ class JointBaselineModel(ConditionalBaselineModel):
         x_0 = generate_x0(true_dict, self.prefix_len, self.prior_noise_scale)
         x_tau = add(mask(true_dict, M_static), mask(x_0, M_targ))
         
-        # severity_score=None triggers unconditional CTMC label generation
-        gen_dict, gen_labels = self.generate_suffix(x_tau, None, M_targ, num_steps)
-        return gen_dict['pose'], gen_dict['trans'], gen_labels
+        initial_condition = batch['severity'] if force_joint_conditioning else None
+        gen_dict, gen_labels, y_0 = self.generate_suffix(x_tau, initial_condition, M_targ, num_steps)
+        
+        if force_joint_conditioning:
+            return gen_dict['pose'], gen_dict['trans'], gen_labels
+        return gen_dict['pose'], gen_dict['trans'], gen_labels, y_0
 
     def _run_ar_inference(self, batch, num_steps=100, force_joint_conditioning=False):
         """Generates the target sequence autoregressively and solves CTMC on the first window."""
@@ -210,8 +215,14 @@ class JointBaselineModel(ConditionalBaselineModel):
         M_cond[:, :self.prefix_len] = True
         M_targ = ~M_cond
 
-        # Start None to solve CTMC during the initial segment rollout
-        current_labels = None  
+        # Calculate NFEs per window to ensure fair comparison with one-shot generation
+        total_target_frames = max_seq_length - self.prefix_len
+        frames_per_window = self.AR_window_size - self.prefix_len
+        num_windows = max(1, math.ceil(total_target_frames / frames_per_window))
+        steps_per_window = max(1, num_steps // num_windows)
+
+        current_labels = batch['severity'] if force_joint_conditioning else None
+        y_0_prior = None
         
         while gen_pose.shape[1] < max_seq_length:
             window_pose = torch.zeros((batch_size, self.AR_window_size, num_joints, pose_dim), device=self.device)
@@ -224,15 +235,21 @@ class JointBaselineModel(ConditionalBaselineModel):
             x0_window = generate_x0(x1_window, self.prefix_len, self.prior_noise_scale)
             x_tau = add(mask(x1_window, M_cond), mask(x0_window, M_targ))
             
-            x1, gen_labels = self.generate_suffix(x_tau, current_labels, M_targ, num_steps)
+            x1, gen_labels, y_0 = self.generate_suffix(x_tau, current_labels, M_targ, steps_per_window)
             
-            # Pass generated labels to next window generation to stop the CTMC jump process
+            # Capture the completely unconditioned prior only on the first window
+            if y_0_prior is None:
+                y_0_prior = y_0
+                
             current_labels = gen_labels
 
             gen_pose = torch.cat([gen_pose, x1['pose'][:, self.prefix_len:]], dim=1)
             gen_trans = torch.cat([gen_trans, x1['trans'][:, self.prefix_len:]], dim=1)
         
-        return gen_pose[:, :max_seq_length], gen_trans[:, :max_seq_length], current_labels
+        if force_joint_conditioning:
+            return gen_pose[:, :max_seq_length], gen_trans[:, :max_seq_length], current_labels
+        
+        return gen_pose[:, :max_seq_length], gen_trans[:, :max_seq_length], current_labels, y_0_prior
 
     def validation_step(self, batch, batch_idx):
         """Automated validation step for Joint Continuous Flow + CTMC."""
@@ -240,9 +257,10 @@ class JointBaselineModel(ConditionalBaselineModel):
         batch_size = batch['severity'].shape[0]
         
         if self.gen_mode == 'one_shot':
-            gen_pose, gen_trans, gen_labels = self._run_oneshot_inference(batch)
+            outputs = self._run_oneshot_inference(batch, self.num_steps)
         elif self.gen_mode == 'ar_rollout':
-            gen_pose, gen_trans, gen_labels = self._run_ar_inference(batch)
+            outputs = self._run_ar_inference(batch, self.num_steps)
+        gen_pose, gen_trans, gen_labels = outputs[:3]
 
         # Extract only the valid frames per sequence
         gt_pose_list, gen_pose_list, gt_trans_list, gen_trans_list = [], [], [], []

@@ -181,6 +181,12 @@ class ConditionalBaselineModel(pl.LightningModule):
         M_cond = torch.zeros((batch_size, self.AR_window_size), dtype=torch.bool, device=self.device)
         M_cond[:, :self.prefix_len] = True
         M_targ = ~M_cond
+
+        # Calculate NFEs per window to ensure fair comparison with one-shot generation
+        total_target_frames = max_seq_length - self.prefix_len
+        frames_per_window = self.AR_window_size - self.prefix_len
+        num_windows = max(1, math.ceil(total_target_frames / frames_per_window))
+        steps_per_window = max(1, num_steps // num_windows)
         
         while gen_pose.shape[1] < max_seq_length:
             # Create new window with prefix from last (generated) frames
@@ -194,7 +200,7 @@ class ConditionalBaselineModel(pl.LightningModule):
             x0_window = generate_x0(x1_window, self.prefix_len, self.prior_noise_scale)
             x_tau = add(mask(x1_window, M_cond), mask(x0_window, M_targ))
             
-            x1 = self.generate_suffix(x_tau, severity_score, M_targ, num_steps)
+            x1 = self.generate_suffix(x_tau, severity_score, M_targ, steps_per_window)
 
             # Concat new generated frames to current sequence total until we pass max sequence length in batch
             gen_pose = torch.cat([gen_pose, x1['pose'][:, self.prefix_len:]], dim=1)

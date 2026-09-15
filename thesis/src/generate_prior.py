@@ -4,7 +4,7 @@ import torch
 from pathlib import Path
 
 
-def generate_prior_from_prefix(prefix_pose, prefix_trans, num_frames, s_scale=1.0):
+def generate_motion_prior_from_prefix(prefix_pose, prefix_trans, num_frames, s_scale=1.0):
     """
     Generates x_0 using an STFlow-inspired kinematic random walk.
     Translation uses full drift + noise. Pose uses zero-drift + noise.
@@ -63,7 +63,7 @@ if __name__ == "__main__":
     }
     
     print("Generating Prior from Prefix...")
-    x_0 = generate_prior_from_prefix(prefix_single, target_single)
+    x_0 = generate_motion_prior_from_prefix(prefix_single, target_single)
     
     # Concat true prefix with generated suffix
     full_seq_6d = torch.cat([prefix_single['pose'], x_0['pose']], dim=1)

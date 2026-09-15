@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import pytorch_lightning as pl
 
-from thesis.src.generate_prior import generate_prior_from_prefix
+from thesis.src.generate_prior import generate_motion_prior_from_prefix
 
 
 # ====================
@@ -172,11 +172,11 @@ def generate_x0(x_1_dict, prefix_len, s_scale):
     num_frames_x0 = x_1_dict['pose'].shape[1] - prefix_len
 
     # Generate Brownian prior from prefix
-    x_0_targ = generate_prior_from_prefix(prefix_pose, prefix_trans, num_frames_x0, s_scale)
+    x_0 = generate_motion_prior_from_prefix(prefix_pose, prefix_trans, num_frames_x0, s_scale)
     
     x_0_pose = torch.zeros_like(x_1_dict['pose'])
     x_0_trans = torch.zeros_like(x_1_dict['trans'])
-    x_0_pose[:, prefix_len:] = x_0_targ['pose']
-    x_0_trans[:, prefix_len:] = x_0_targ['trans']
+    x_0_pose[:, prefix_len:] = x_0['pose']
+    x_0_trans[:, prefix_len:] = x_0['trans']
 
     return {'pose': x_0_pose, 'trans': x_0_trans}

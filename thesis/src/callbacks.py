@@ -12,7 +12,7 @@ from smplx.body_models import SMPL
 
 from thesis.src.sample import generate_trajectories
 from thesis.src.evaluate_smpl import SMPLEvaluator
-from thesis.src.generate_prior import generate_prior_from_prefix
+from thesis.src.generate_prior import generate_motion_prior_from_prefix
 from thesis.src.utils.geometry_utils import forward_to_h36m
 from thesis.src.utils.pipeline_utils import format_and_convert, evaluate_and_plot_distributions, plot_physical_realism_tracking
 from thesis.src.utils.rendering.render_h36m_gif import render_three_way_gif
@@ -88,7 +88,7 @@ class WandBEvaluationCallback(Callback):
             pref_single, targ_single = random.choice(candidates[sev_val])
             pref_single = {k: v.to(pl_module.device) for k, v in pref_single.items()}
             targ_single = {k: v.to(pl_module.device) for k, v in targ_single.items()}
-            x_0 = generate_prior_from_prefix(pref_single, targ_single)
+            x_0 = generate_motion_prior_from_prefix(pref_single, targ_single)
             self.anchors[sev_val] = {"prefix": pref_single, "x_0": x_0, "target": targ_single, "severity": sev_val}
             print(f"  -> Locked Random Anchor for Severity Class {sev_val}")
 
