@@ -3,7 +3,6 @@ import numpy as np
 from tqdm.auto import tqdm
 from pathlib import Path
 
-from thesis.src.generate_prior import generate_prior_from_prefix
 
 def save_generated_to_npz(full_seq_pose, full_seq_trans, output_dir, filename="generated_PD_walk.npz"):
     out_path = Path(output_dir)
@@ -24,58 +23,56 @@ def generate_trajectories(model, dataloader, num_steps, device, max_batches=-1, 
     """Generates synthetic dataset using model and dataloader."""
     model.eval()
 
-    num_classes = model.cfg['model'].get('num_classes', 4)
     all_gt_pose, all_gt_trans = [], []
     all_gen_pose, all_gen_trans = [], []
-    all_gt_severities = []
-    all_gen_severities = []
-    all_prior_severities = []
+    all_gt_severities, all_gen_severities, all_prior_severities = [], [], []
     
-    for i, (prefix, target, severity) in enumerate(tqdm(dataloader, desc=desc, leave=False)):
+    for i, batch in enumerate(tqdm(dataloader, desc=desc, leave=False)):
         if max_batches > 0 and i >= int(max_batches):
             break
             
-        prefix = {k: v.to(device) for k, v in prefix.items()}
-        target = {k: v.to(device) for k, v in target.items()}
-        severity = severity.to(device)
-        batch_size = severity.shape[0]
+        batch = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
+        batch_size = batch['severity'].shape[0]
         
-        gt_pose = torch.cat([prefix['pose'], target['pose']], dim=1).cpu()
-        gt_trans = torch.cat([prefix['trans'], target['trans']], dim=1).cpu()
-        all_gt_pose.append(gt_pose)
-        all_gt_trans.append(gt_trans)
-        all_gt_severities.extend(severity.cpu().tolist())
+        # Store unpadded ground truth sequences
+        for b_idx in range(batch_size):
+            l = batch['seq_len'][b_idx].item()
+            all_gt_pose.append(batch['pose'][b_idx:b_idx+1, :l].cpu())
+            all_gt_trans.append(batch['trans'][b_idx:b_idx+1, :l].cpu())
+        all_gt_severities.extend(batch['severity'].cpu().tolist())
         
-        x_0 = generate_prior_from_prefix(prefix, target)
+        if model.gen_mode == 'one_shot':
+            gen_outputs = model._run_oneshot_inference(batch, num_steps, force_joint_conditioning)
+        else:
+            gen_outputs = model._run_ar_inference(batch, num_steps, force_joint_conditioning)
 
-        # Handle conditional, joint (MGM-Joint), and forced joint (MGM-Cond) generation
         if is_joint_model and force_joint_conditioning:
             # MGM-Cond: Force the severity score to match the ground truth prefix
-            all_prior_severities.extend(severity.cpu().tolist())
-            gen_suffix, gen_severity = model.generate_suffix(prefix, x_0, severity_score=severity, 
-                                                                num_steps=num_steps)
-            all_gen_severities.extend(gen_severity.cpu().tolist())
+            gen_pose, gen_trans, gen_labels = gen_outputs
+            all_prior_severities.extend(batch['severity'].cpu().tolist())
+            all_gen_severities.extend(gen_labels.cpu().tolist())
+            
         elif is_joint_model and not force_joint_conditioning:
             # MGM-Joint: Let the model predict its own severity score via jump process
-            y_0 = torch.randint(0, num_classes, (batch_size,), device=device)
-            all_prior_severities.extend(y_0.cpu().tolist())
-            gen_suffix, gen_severity = model.generate_suffix(prefix, x_0, severity_score=None, 
-                                                                num_steps=num_steps, y_0=y_0)
-            all_gen_severities.extend(gen_severity.cpu().tolist())
+            gen_pose, gen_trans, gen_labels, y_0_prior = gen_outputs
+            all_prior_severities.extend(y_0_prior.cpu().tolist())
+            all_gen_severities.extend(gen_labels.cpu().tolist())
+            
         else:
             # CFM-Cond: Standard conditional model
-            all_prior_severities.extend(severity.cpu().tolist())
-            gen_suffix = model.generate_suffix(prefix, x_0, severity_score=severity, num_steps=num_steps)
-            all_gen_severities.extend(severity.cpu().tolist())            
-        
-        gen_pose = torch.cat([prefix['pose'], gen_suffix['pose']], dim=1).cpu()
-        gen_trans = torch.cat([prefix['trans'], gen_suffix['trans']], dim=1).cpu()
-        all_gen_pose.append(gen_pose)
-        all_gen_trans.append(gen_trans)
+            gen_pose, gen_trans = gen_outputs[:2]
+            all_prior_severities.extend(batch['severity'].cpu().tolist())
+            all_gen_severities.extend(batch['severity'].cpu().tolist())
+
+        # Store unpadded synthetic sequences
+        for b_idx in range(batch_size):
+            l = batch['seq_len'][b_idx].item()
+            all_gen_pose.append(gen_pose[b_idx:b_idx+1, :l].cpu())
+            all_gen_trans.append(gen_trans[b_idx:b_idx+1, :l].cpu())
 
     return {
-        "gt": {"pose": torch.cat(all_gt_pose, dim=0), "trans": torch.cat(all_gt_trans, dim=0)},
-        "gen": {"pose": torch.cat(all_gen_pose, dim=0), "trans": torch.cat(all_gen_trans, dim=0)},
+        "gt": {"pose": all_gt_pose, "trans": all_gt_trans},
+        "gen": {"pose": all_gen_pose, "trans": all_gen_trans},
         "severities": all_gt_severities,
         "gen_severities": all_gen_severities,
         "prior_severities": all_prior_severities

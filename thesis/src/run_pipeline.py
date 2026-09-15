@@ -13,7 +13,8 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 from thesis.src.callbacks import EpochAndValPrintCallback, WandBEvaluationCallback
-from thesis.src.model import ConditionalBaselineModel, JointBaselineModel
+from thesis.src.model_conditional import ConditionalBaselineModel
+from thesis.src.model_joint import JointBaselineModel
 from thesis.src.dataloader import get_dataloader
 from thesis.src.evaluate_smpl import SMPLEvaluator
 from thesis.src.sample import generate_trajectories

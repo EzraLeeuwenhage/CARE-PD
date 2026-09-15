@@ -16,9 +16,7 @@ from thesis.src.model_backbones import (
     add_noise
 )
 
-# ====================
-# MODEL CLASSES
-# ====================
+
 class ConditionalBaselineModel(pl.LightningModule):
     """Baseline conditional generator model for comparison against better backbones and joint models."""
     def __init__(self, cfg):
@@ -136,7 +134,7 @@ class ConditionalBaselineModel(pl.LightningModule):
         self.log("train/loss_total", loss_total, on_step=False, on_epoch=True)
         return loss_total
 
-    def generate_suffix(self, x_tau, severity_score, M_targ, num_steps=100, y_0=None):
+    def generate_suffix(self, x_tau, severity_score, M_targ, num_steps=100):
         """Euler ODE Solver strictly masking velocity updates to prevent prefix drift."""
         batch_size = x_tau['pose'].shape[0]
         dt = 1.0 / num_steps
@@ -150,9 +148,9 @@ class ConditionalBaselineModel(pl.LightningModule):
             
             x_tau = add(x_tau, mul(v_pred_masked, torch.tensor([dt], device=self.device)))
                 
-        return x_tau, None
+        return x_tau
 
-    def _run_oneshot_inference(self, batch):
+    def _run_oneshot_inference(self, batch, num_steps=100, force_joint_conditioning=False):
         """Generates the target sequence globally in a single pass."""
         true_dict = {'pose': batch['pose'], 'trans': batch['trans']}
         severity_score = batch['severity']
@@ -165,11 +163,10 @@ class ConditionalBaselineModel(pl.LightningModule):
         x_0 = generate_x0(true_dict, self.prefix_len, self.prior_noise_scale)
         x_tau = add(mask(true_dict, M_static), mask(x_0, M_targ))
         
-        # Returns gen_labels (which is None for Conditional, and y_tau for Joint)
-        gen_dict, gen_labels = self.generate_suffix(x_tau, severity_score, M_targ, num_steps=self.num_steps)
-        return gen_dict['pose'], gen_dict['trans'], gen_labels
+        gen_dict = self.generate_suffix(x_tau, severity_score, M_targ, num_steps)
+        return gen_dict['pose'], gen_dict['trans']
 
-    def _run_ar_inference(self, batch):
+    def _run_ar_inference(self, batch, num_steps=100, force_joint_conditioning=False):
         """Generates the target sequence autoregressively using sliding windows."""
         true_dict = {'pose': batch['pose'], 'trans': batch['trans']}
         severity_score = batch['severity']
@@ -185,8 +182,6 @@ class ConditionalBaselineModel(pl.LightningModule):
         M_cond[:, :self.prefix_len] = True
         M_targ = ~M_cond
         
-        current_labels = severity_score  # Initialize with ground truth condition
-        
         while gen_pose.shape[1] < max_seq_length:
             # Create new window with prefix from last (generated) frames
             window_pose = torch.zeros((batch_size, self.AR_window_size, num_joints, pose_dim), device=self.device)
@@ -199,16 +194,13 @@ class ConditionalBaselineModel(pl.LightningModule):
             x0_window = generate_x0(x1_window, self.prefix_len, self.prior_noise_scale)
             x_tau = add(mask(x1_window, M_cond), mask(x0_window, M_targ))
             
-            # For Joint Models, current_labels becomes the generated class after the first chunk
-            x1, gen_labels = self.generate_suffix(x_tau, current_labels, M_targ, num_steps=self.num_steps)
-            if gen_labels is not None:
-                current_labels = gen_labels 
+            x1 = self.generate_suffix(x_tau, severity_score, M_targ, num_steps)
 
             # Concat new generated frames to current sequence total until we pass max sequence length in batch
             gen_pose = torch.cat([gen_pose, x1['pose'][:, self.prefix_len:]], dim=1)
             gen_trans = torch.cat([gen_trans, x1['trans'][:, self.prefix_len:]], dim=1)
         
-        return gen_pose[:, :max_seq_length], gen_trans[:, :max_seq_length], current_labels
+        return gen_pose[:, :max_seq_length], gen_trans[:, :max_seq_length]
 
     def validation_step(self, batch, batch_idx):
         """Automated validation step solving AR-WG iterative paths or OS-SG global paths."""
@@ -216,9 +208,9 @@ class ConditionalBaselineModel(pl.LightningModule):
         batch_size = batch['severity'].shape[0]
         
         if self.gen_mode == 'one_shot':
-            gen_pose, gen_trans, gen_labels = self._run_oneshot_inference(batch)
+            gen_pose, gen_trans = self._run_oneshot_inference(batch, self.num_steps)
         elif self.gen_mode == 'ar_rollout':
-            gen_pose, gen_trans, gen_labels = self._run_ar_inference(batch)
+            gen_pose, gen_trans = self._run_ar_inference(batch, self.num_steps)
 
         # Extract only the valid frames per sequence
         gt_pose_list, gen_pose_list, gt_trans_list, gen_trans_list = [], [], [], []
@@ -245,11 +237,6 @@ class ConditionalBaselineModel(pl.LightningModule):
         
         self.log("val/mpjae_deg", val_mpjae_deg, on_step=False, on_epoch=True, sync_dist=True)
         self.log("val/trans_mse", val_trans_mse, on_step=False, on_epoch=True, sync_dist=True)
-        
-        # Log label accuracy for joint models
-        if gen_labels is not None:
-            accuracy = (gen_labels == batch['severity']).float().mean()
-            self.log("val/label_accuracy", accuracy, on_step=False, on_epoch=True, sync_dist=True)
             
         return val_mpjae_deg
 

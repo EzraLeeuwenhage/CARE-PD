@@ -1,9 +1,8 @@
+import math
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-import pytorch_lightning as pl
 
-from thesis.src.evaluate_smpl import SMPLEvaluator
+from thesis.src.model_conditional import ConditionalBaselineModel
 from thesis.src.model_backbones import (
     JointBaselineBackbone,
     FlowHead,
@@ -36,6 +35,7 @@ def ctmc_jump_step(y_current, Q_pred, dt, num_classes):
     # Normalize probabilities to avoid float precision errors and sample next state
     probs = probs / probs.sum(dim=-1, keepdim=True)
     return torch.multinomial(probs, num_samples=1).squeeze(-1)
+
 
 class JointBaselineModel(ConditionalBaselineModel):
     """Multimodal joint generator model."""
@@ -151,7 +151,7 @@ class JointBaselineModel(ConditionalBaselineModel):
         self.log("train/loss_total", loss_total, on_step=False, on_epoch=True)
         return loss_total
 
-    def generate_suffix(self, x_tau, severity_score, M_targ, num_steps=100, y_0=None):
+    def generate_suffix(self, x_tau, severity_score, M_targ, num_steps=100):
         batch_size = x_tau['pose'].shape[0]
         num_classes = self.cfg['model'].get('num_classes', 4)
         dt = 1.0 / num_steps
@@ -161,12 +161,8 @@ class JointBaselineModel(ConditionalBaselineModel):
             y_tau = severity_score.clone()
             sample_labels = False
         else:
-            if y_0 is not None:
-                # use provided initial severity score
-                y_tau = y_0.clone() 
-            else:
-                # sample initial severity score randomly
-                y_tau = torch.randint(0, num_classes, (batch_size,), device=self.device)
+            # sample initial severity score randomly
+            y_tau = torch.randint(0, num_classes, (batch_size,), device=self.device)
             sample_labels = True
 
         for step in range(num_steps):
@@ -182,3 +178,98 @@ class JointBaselineModel(ConditionalBaselineModel):
                 y_tau = ctmc_jump_step(y_tau, Q_theta, dt, num_classes)
 
         return x_tau, y_tau
+
+    def _run_oneshot_inference(self, batch, num_steps=100, force_joint_conditioning=False):
+        """Generates the target sequence and discrete labels globally in a single pass."""
+        true_dict = {'pose': batch['pose'], 'trans': batch['trans']}
+        
+        M_cond = batch['cond_mask']
+        M_pad = batch['pad_mask']
+        M_static = M_cond | M_pad
+        M_targ = ~M_static
+        
+        x_0 = generate_x0(true_dict, self.prefix_len, self.prior_noise_scale)
+        x_tau = add(mask(true_dict, M_static), mask(x_0, M_targ))
+        
+        # severity_score=None triggers unconditional CTMC label generation
+        gen_dict, gen_labels = self.generate_suffix(x_tau, None, M_targ, num_steps)
+        return gen_dict['pose'], gen_dict['trans'], gen_labels
+
+    def _run_ar_inference(self, batch, num_steps=100, force_joint_conditioning=False):
+        """Generates the target sequence autoregressively and solves CTMC on the first window."""
+        true_dict = {'pose': batch['pose'], 'trans': batch['trans']}
+        batch_size = batch['severity'].shape[0]
+        
+        max_seq_length = batch['seq_len'].max().item()
+        
+        gen_pose = true_dict['pose'][:, :self.prefix_len]
+        gen_trans = true_dict['trans'][:, :self.prefix_len]
+        num_joints, pose_dim = gen_pose.shape[2], gen_pose.shape[3]
+        
+        M_cond = torch.zeros((batch_size, self.AR_window_size), dtype=torch.bool, device=self.device)
+        M_cond[:, :self.prefix_len] = True
+        M_targ = ~M_cond
+
+        # Start None to solve CTMC during the initial segment rollout
+        current_labels = None  
+        
+        while gen_pose.shape[1] < max_seq_length:
+            window_pose = torch.zeros((batch_size, self.AR_window_size, num_joints, pose_dim), device=self.device)
+            window_trans = torch.zeros((batch_size, self.AR_window_size, 3), device=self.device)
+
+            window_pose[:, :self.prefix_len] = gen_pose[:, -self.prefix_len:]
+            window_trans[:, :self.prefix_len] = gen_trans[:, -self.prefix_len:]
+            x1_window = {'pose': window_pose, 'trans': window_trans}
+            
+            x0_window = generate_x0(x1_window, self.prefix_len, self.prior_noise_scale)
+            x_tau = add(mask(x1_window, M_cond), mask(x0_window, M_targ))
+            
+            x1, gen_labels = self.generate_suffix(x_tau, current_labels, M_targ, num_steps)
+            
+            # Pass generated labels to next window generation to stop the CTMC jump process
+            current_labels = gen_labels
+
+            gen_pose = torch.cat([gen_pose, x1['pose'][:, self.prefix_len:]], dim=1)
+            gen_trans = torch.cat([gen_trans, x1['trans'][:, self.prefix_len:]], dim=1)
+        
+        return gen_pose[:, :max_seq_length], gen_trans[:, :max_seq_length], current_labels
+
+    def validation_step(self, batch, batch_idx):
+        """Automated validation step for Joint Continuous Flow + CTMC."""
+        seq_len = batch['seq_len']
+        batch_size = batch['severity'].shape[0]
+        
+        if self.gen_mode == 'one_shot':
+            gen_pose, gen_trans, gen_labels = self._run_oneshot_inference(batch)
+        elif self.gen_mode == 'ar_rollout':
+            gen_pose, gen_trans, gen_labels = self._run_ar_inference(batch)
+
+        # Extract only the valid frames per sequence
+        gt_pose_list, gen_pose_list, gt_trans_list, gen_trans_list = [], [], [], []
+        
+        for i in range(batch_size):
+            l = seq_len[i].item()
+            gt_pose_list.append(batch['pose'][i:i+1, :l])
+            gen_pose_list.append(gen_pose[i:i+1, :l])
+            gt_trans_list.append(batch['trans'][i:i+1, :l])
+            gen_trans_list.append(gen_trans[i:i+1, :l])
+
+        # Move pose to CPU, keep trans on GPU 
+        gt_pose_flat = torch.cat(gt_pose_list, dim=1).cpu()
+        gen_pose_flat = torch.cat(gen_pose_list, dim=1).cpu()
+        gt_trans_flat = torch.cat(gt_trans_list, dim=1)
+        gen_trans_flat = torch.cat(gen_trans_list, dim=1)
+
+        # Compute evaluation metrics
+        val_mpjae_rad = self.evaluator.compute_mpjae(gt_pose_flat, gen_pose_flat)
+        val_mpjae_deg = val_mpjae_rad * (180.0 / math.pi)
+        val_trans_mse = F.mse_loss(gen_trans_flat, gt_trans_flat)
+        
+        self.log("val/mpjae_deg", val_mpjae_deg, on_step=False, on_epoch=True, sync_dist=True)
+        self.log("val/trans_mse", val_trans_mse, on_step=False, on_epoch=True, sync_dist=True)
+        
+        # Log categorical label accuracy
+        accuracy = (gen_labels == batch['severity']).float().mean()
+        self.log("val/label_accuracy", accuracy, on_step=False, on_epoch=True, sync_dist=True)
+            
+        return val_mpjae_deg
