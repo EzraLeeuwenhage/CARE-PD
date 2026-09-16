@@ -380,6 +380,26 @@ def plot_sparc_metrics(data, output_dir, distances_df=None):
         axes[0].set_ylabel("SPARC Value (Higher = Smoother)")
         axes[0].set_xlabel("")
         axes[0].tick_params(axis='x', rotation=30)
+
+        if distances_df is not None:
+            y_max = df_cat_overall["SPARC"].max()
+            y_min = df_cat_overall["SPARC"].min()
+            y_range = max(y_max - y_min, 1e-5)
+            axes[0].set_ylim(y_min - (y_range * 0.05), y_max + (y_range * 0.35))
+
+            x_ticks = [l.get_text() for l in axes[0].get_xticklabels()]
+            for x_idx, label_text in enumerate(x_ticks):
+                # Query the 'Overall' severity class since the left panel only plots overall data
+                match = distances_df[(distances_df['Severity'] == 'Overall') & (distances_df['Metric'] == f'SPARC_{label_text}')]
+                if not match.empty:
+                    ks = match.iloc[0]['KS_Stat']
+                    h = match.iloc[0]['Hellinger']
+                    worst_score = max(ks, h)
+                    
+                    axes[0].text(x_idx, y_max + (y_range * 0.15), f"K: {ks:.2f}\nH: {h:.2f}",
+                            ha='center', va='bottom', fontsize=10, fontweight='bold',
+                            bbox=dict(facecolor=get_color(worst_score), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
+
         axes[0].legend(title="Data Source", loc="lower right")
 
         # Right Panel: Primary Walking Joints across clinical severity classes

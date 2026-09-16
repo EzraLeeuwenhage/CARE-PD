@@ -220,7 +220,7 @@ class FullSequenceSMPLDataset(Dataset):
         
         # Stride for extracting multiple windows from long sequences.
         # Defaults to max_len (non-overlapping). Set to max_len // 2 for 50% overlap.
-        self.stride = cfg['windowing'].get('full_seq_stride', self.max_len)
+        self.stride = cfg['windowing'].get('full_seq_step_size', self.max_len)
 
         eval_split = self.cfg['training'].get('eval_split', 0.1)
         test_split = self.cfg['training'].get('test_split', 0.2)

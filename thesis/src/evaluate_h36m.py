@@ -26,8 +26,8 @@ class H36MEvaluator:
         self.metric_keys = [
             "sequence_length", "mean_bone_length_variance", "floating", 
             "mean_stance_displacement", "mean_step_length", "mean_step_asymmetry", 
-            "mean_walking_speed", "max_ankle_clearance", 
-            "mean_emos", "variance_emos"
+            "mean_active_walking_speed", "mean_global_walking_speed", "mean_cadence", 
+            "max_ankle_clearance", "mean_emos", "variance_emos"
         ]
         self.nan_metrics = self.metric_keys.copy()
         self.nan_metrics.remove("mean_bone_length_variance")
@@ -79,8 +79,10 @@ class H36MEvaluator:
         T = seq.shape[0]
 
         # Calculate overall walking speed to set an adaptive velocity threshold (M7)
-        total_pelvis_disp = np.linalg.norm(seq[-1, self.PELVIS, :] - seq[0, self.PELVIS, :])
-        avg_walking_speed = total_pelvis_disp / (T / self.fps) if T > 0 else 0
+        # Sum the frame-to-frame Euclidean displacements for true path length
+        frame_displacements = np.linalg.norm(np.diff(seq[:, self.PELVIS, :], axis=0), axis=-1)
+        total_pelvis_displacement = np.sum(frame_displacements)
+        avg_walking_speed = total_pelvis_displacement / (T / self.fps) if T > 0 else 0
         # Threshold: 0.5 * walking speed, with a hard floor of 0.1 m/s for freezing patients
         v_thresh = max(0.5 * avg_walking_speed, 0.1)
 
@@ -187,7 +189,8 @@ class H36MEvaluator:
         # Return NaNs for sequences with no forward movement (in severity class 3)
         z_travel = abs(seq[-1, self.PELVIS, 2] - seq[0, self.PELVIS, 2])
         if z_travel < self.min_z_travel:
-            for m in self.nan_metrics: metrics[m] = np.nan
+            for m in self.nan_metrics: 
+                metrics[m] = np.nan
             metrics["heel_strikes_info"] = []
             return metrics
 
@@ -205,7 +208,14 @@ class H36MEvaluator:
         
         if len(peaks_info) < 2:
             print(f"  Warning: Sequence '{clip_id}' too short or no heel strikes detected (T={T}, peaks={len(peaks_info)}). Returning NaN metrics.")
-            for m in self.nan_metrics: metrics[m] = np.nan
+            for m in self.nan_metrics: 
+                metrics[m] = np.nan
+
+            # Global speed and cadence can still be computed even with 0 or 1 strike
+            frame_disps = np.linalg.norm(np.diff(seq[:, self.PELVIS, :], axis=0), axis=-1)
+            metrics["mean_global_walking_speed"] = float(np.sum(frame_disps) / (T / self.fps)) if T > 0 else 0.0
+            metrics["mean_cadence"] = float((len(peaks_info) / (T / self.fps)) * 60.0) if T > 0 else 0.0
+
             metrics["heel_strikes_info"] = []
             return metrics
 
@@ -268,12 +278,19 @@ class H36MEvaluator:
             
         metrics["max_ankle_clearance"] = np.max(ankle_clearances) if ankle_clearances else np.nan
 
+        # Cadence (Steps per minute across the entire sequence)
+        metrics["mean_cadence"] = (len(peaks_info) / (T / self.fps)) * 60.0
+
+        # Global Sequence Speed (Path integral over all T frames)
+        frame_disps = np.linalg.norm(np.diff(seq[:, self.PELVIS, :], axis=0), axis=-1)
+        metrics["mean_global_walking_speed"] = np.sum(frame_disps) / (T / self.fps) if T > 0 else 0.0        
+
         # Walking Speed (m/s)
         first_strike, _ = peaks_info[0]
         last_strike, _ = peaks_info[-1]
-        pelvis_displacement = np.linalg.norm(seq[last_strike, self.PELVIS, :] - seq[first_strike, self.PELVIS, :])
-        time_elapsed = (last_strike - first_strike) / self.fps
-        metrics["mean_walking_speed"] = pelvis_displacement / time_elapsed if time_elapsed > 0 else 0.0
+        active_displacement = np.linalg.norm(seq[last_strike, self.PELVIS, :] - seq[first_strike, self.PELVIS, :])
+        active_time = (last_strike - first_strike) / self.fps
+        metrics["mean_active_walking_speed"] = active_displacement / active_time if active_time > 0 else 0.0
 
         # Estimated Margin of Stability (eMoS) -> Medio-Lateral stability
         pelvis_x = seq[:, self.PELVIS, 0]
@@ -332,10 +349,9 @@ class H36MEvaluator:
         for (severity, clip_id, _), metrics in zip(tasks, results):
             heel_strikes_registry[clip_id] = metrics.pop("heel_strikes_info", [])
             
-            if not np.isnan(metrics["mean_walking_speed"]):
-                for k in self.metric_keys:
-                    distributions[severity][k].append(metrics[k])
-                    distributions["overall"][k].append(metrics[k])
+            for k in self.metric_keys:
+                distributions[severity][k].append(metrics[k])
+                distributions["overall"][k].append(metrics[k])
                     
         for group in distributions.keys():
             for k in self.metric_keys:

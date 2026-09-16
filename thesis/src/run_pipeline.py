@@ -22,7 +22,7 @@ from thesis.src.utils.pipeline_utils import (
     load_config, format_and_convert, evaluate_and_plot_distributions
 )
 
-CONFIG_PATH = "thesis/configs/baseline_3d.yaml"
+CONFIG_PATH = "thesis/configs/overfit_baseline_3d.yaml"
 
 
 if __name__ == "__main__":

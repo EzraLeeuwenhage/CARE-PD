@@ -112,13 +112,16 @@ def plot_pd_feature_violins(df, output_dir, prefix="", dataset_label=""):
     """
     features = [
         {"key": "mean_step_length", "title": "Mean Step Length", "ylabel": "Length (m)"},
-        {"key": "mean_walking_speed", "title": "Walking Speed", "ylabel": "Speed (m/s)"},
         {"key": "max_ankle_clearance", "title": "Max Ankle Clearance", "ylabel": "Clearance (m)"},
+        {"key": "mean_active_walking_speed", "title": "Active Walking Speed", "ylabel": "Speed (m/s)"},
+        {"key": "mean_global_walking_speed", "title": "Global Walking Speed", "ylabel": "Speed (m/s)"},
+        {"key": "mean_cadence", "title": "Cadence", "ylabel": "Steps / Min"},
         {"key": "mean_emos", "title": "Mean Margin of Stability (eMoS)", "ylabel": "eMoS (m)"}
     ]
 
-    grid_shape = (2, 2)
-    fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=(11, 10))
+    # Expand the grid to fit 6 plots
+    grid_shape = (3, 2)
+    fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=(12, 14))
     axes_flat = axes.flatten()
 
     labels = df["Class_Label"].unique() 
@@ -206,12 +209,14 @@ def plot_pd_feature_comparison_plots(df, distances_df, output_dir):
     """
     features = [
         {"key": "mean_step_length", "title": "Mean Step Length", "ylabel": "Length (m)"},
-        {"key": "mean_walking_speed", "title": "Walking Speed", "ylabel": "Speed (m/s)"},
         {"key": "max_ankle_clearance", "title": "Max Ankle Clearance", "ylabel": "Clearance (m)"},
+        {"key": "mean_active_walking_speed", "title": "Active Walking Speed", "ylabel": "Speed (m/s)"},
+        {"key": "mean_global_walking_speed", "title": "Global Walking Speed", "ylabel": "Speed (m/s)"},
+        {"key": "mean_cadence", "title": "Cadence", "ylabel": "Steps / Min"},
         {"key": "mean_emos", "title": "Mean Margin of Stability (eMoS)", "ylabel": "eMoS (m)"}
     ]
 
-    labels = df["Class_Label"].unique() 
+    labels = df["Class_Label"].unique()
 
     def get_color(score):
         if score < 0.10: return '#85e085' # Green

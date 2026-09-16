@@ -48,20 +48,13 @@ class SMPLEvaluator:
             return_per_joint: If True, returns array of shape (24,) with error per joint.
                               If False, returns overall scalar float (radians).
         """
+        assert gt_pose.shape == gen_pose.shape, (
+            f"[MPJAE Error] Shape mismatch between Ground Truth {tuple(gt_pose.shape)} "
+            f"and Generated {tuple(gen_pose.shape)}. Sequences must have identical lengths."
+        )
+
         R_gt = pose_to_rmat(gt_pose)   
         R_gen = pose_to_rmat(gen_pose) 
-
-        # Truncate to the length of the shortest sequence along the Temporal (T) dimension
-        # In a (B, T, J, 3, 3) tensor, T is at index -4. In a (T, J, 3, 3) tensor, T is at -3.
-        t_dim = -4 if R_gt.dim() == 5 else -3
-        min_frames = min(R_gt.shape[t_dim], R_gen.shape[t_dim])
-        
-        if R_gt.dim() == 4:
-            R_gt = R_gt[:min_frames]
-            R_gen = R_gen[:min_frames]
-        else:
-            R_gt = R_gt[:, :min_frames]
-            R_gen = R_gen[:, :min_frames]
 
         # Compute relative rotation matrix: R_rel = R_gen * R_gt^T
         R_rel = torch.matmul(R_gen, R_gt.transpose(-1, -2))

@@ -299,8 +299,9 @@ if __name__ == "__main__":
         gen_data = pickle.load(f)
 
     pd_features = [
-        "mean_step_length", "mean_step_asymmetry", "mean_walking_speed", 
-        "max_ankle_clearance", "mean_emos", "mean_jerk"
+        "mean_step_length", "mean_step_asymmetry", "mean_active_walking_speed", 
+        "mean_global_walking_speed", "mean_cadence", "max_ankle_clearance", 
+        "mean_emos"
     ]
 
     print(f"Comparing {len(pd_features)} PD features between GT and Generated Data...")

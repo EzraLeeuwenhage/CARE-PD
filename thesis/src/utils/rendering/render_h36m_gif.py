@@ -204,7 +204,7 @@ if __name__ == "__main__":
     target_dict = {'pose': gt_pose[:, prefix_length:], 'trans': gt_trans[:, prefix_length:]}
     
     # Generate the 6D FM Prior (x_0)
-    x_0_dict = generate_motion_prior_from_prefix(prefix_dict, target_dict)
+    x_0_dict = generate_motion_prior_from_prefix(prefix_dict['pose'], prefix_dict['trans'], num_frames=target_dict['pose'].shape[1])
     
     # 3. Concatenate Prefix + Prior to get the full timeline
     prior_full_pose = torch.cat([prefix_dict['pose'], x_0_dict['pose']], dim=1)

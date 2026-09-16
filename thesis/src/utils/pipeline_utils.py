@@ -223,16 +223,41 @@ def evaluate_and_plot_distributions(memory_data, min_z_travel=0.5, is_joint_mode
     h36m_dist_df = comparator._format_results_to_dataframe(comparator.compare(gt_h36m_data, gen_h36m_data))
 
     gt_comp, gen_comp = defaultdict(dict), defaultdict(dict)
+    
+    # Define aggregation targets for the text balloons
+    target_sparc_joints = ['L_Hip', 'R_Hip', 'L_Knee', 'R_Knee', 'L_Ankle', 'R_Ankle']
+    categories = [
+        'Overall', 'Lower Body', 'Upper Body', 'Hips', 
+        'Knees', 'Ankles', 'Shoulders', 'Left Body', 'Right Body'
+    ]
+    
     for sev_key, metrics in smpl_cache_data.get("raw_distributions", {}).items():
         c_key = "overall" if sev_key == "Overall" else sev_key.replace("Class ", "")
+        
+        # Arm Swing
         gt_comp[c_key]["Swing Asymmetry (SI)"] = np.array(metrics.get("GT_Symmetry_Index", []))
         gen_comp[c_key]["Swing Asymmetry (SI)"] = np.array(metrics.get("Gen_Symmetry_Index", []))
+        
+        # Standalone Knees
         gt_knees, gen_knees = [], []
         for j in ['L_Knee', 'R_Knee']:
             gt_knees.extend(metrics.get(f"GT_SPARC_{j}", []))
             gen_knees.extend(metrics.get(f"Gen_SPARC_{j}", []))
         gt_comp[c_key]["SPARC_Knees"] = np.array(gt_knees)
         gen_comp[c_key]["SPARC_Knees"] = np.array(gen_knees)
+        
+        # Lower Limbs Pooled
+        gt_legs, gen_legs = [], []
+        for j in target_sparc_joints:
+            gt_legs.extend(metrics.get(f"GT_SPARC_{j}", []))
+            gen_legs.extend(metrics.get(f"Gen_SPARC_{j}", []))
+        gt_comp[c_key]["SPARC_Lower_Limbs"] = np.array(gt_legs)
+        gen_comp[c_key]["SPARC_Lower_Limbs"] = np.array(gen_legs)
+
+        # Broad Categories
+        for cat in categories:
+            gt_comp[c_key][f"SPARC_{cat}"] = np.array(metrics.get(f"GT_SPARC_{cat}", []))
+            gen_comp[c_key][f"SPARC_{cat}"] = np.array(metrics.get(f"Gen_SPARC_{cat}", []))
         
     smpl_dist_df = comparator._format_results_to_dataframe(comparator.compare(gt_comp, gen_comp))
 

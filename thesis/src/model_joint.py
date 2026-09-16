@@ -161,6 +161,9 @@ class JointBaselineModel(ConditionalBaselineModel):
 
         loss_motion = ((1.0 - self.alpha_trans) * loss_pose) + (self.alpha_trans * loss_trans)
         loss_total = ((1.0 - self.alpha_label) * loss_motion) + (self.alpha_label * loss_label)
+
+        self.log("train/loss_pose", loss_pose, on_step=False, on_epoch=True)
+        self.log("train/loss_trans", loss_trans, on_step=False, on_epoch=True)
         
         self.log("train/loss_motion", loss_motion, on_step=False, on_epoch=True)
         self.log("train/loss_label", loss_label, on_step=False, on_epoch=True)
