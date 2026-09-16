@@ -12,8 +12,10 @@ from smplx.body_models import SMPL
 from thesis.src.evaluate_h36m import H36MEvaluator
 from thesis.src.evaluate_smpl import SMPLEvaluator
 from thesis.src.evaluate_distributions import DistributionComparator
-from thesis.src.utils.geometry_utils import batched_to_h36m
+from thesis.src.generate_prior import generate_motion_prior_from_prefix
+from thesis.src.utils.geometry_utils import forward_to_h36m
 
+from thesis.src.utils.rendering.render_h36m_gif import render_three_way_gif
 from thesis.src.utils.visualize_metrics.visualize_h36m_metric_dist import (
     plot_dataset_summary_stats, plot_pd_feature_violins, plot_pd_feature_comparison_plots,
     prepare_dataframe, prepare_combined_dataframe
@@ -36,6 +38,110 @@ def load_config(CONFIG_PATH="thesis/configs/baseline_3d.yaml"):
     cfg['paths']['output_dir'] = cfg['paths']['output_dir'].format(model_name=model_name)
     return cfg
 
+def unpack_inference_outputs(outputs):
+    """Safely unpacks variable-length inference outputs from conditional and joint models."""
+    gen_pose = outputs[0]
+    gen_trans = outputs[1]
+    # Get severity tensor if it exists (Joint model)
+    gen_severity = outputs[2] if len(outputs) > 2 else None
+    # Get scalar severity value for logging/rendering
+    y_0_prior = outputs[3] if len(outputs) > 3 else None
+    return gen_pose, gen_trans, gen_severity, y_0_prior
+
+def render_anchor_gifs(anchors, pl_module, is_joint_model, vis_dir, smpl_model, h36m_regressor, display_epoch):
+    """
+    Executes inference on anchor sequences, reconstructs the motion priors, 
+    and renders 3-way comparison GIFs for WandB logging.
+    """
+    gif_paths = []
+    
+    for sev_val, anchor_data in anchors.items():
+        gen = torch.Generator(device=pl_module.device).manual_seed(anchor_data["seed"])
+
+        # Run inference based on generation mode and model type
+        if pl_module.gen_mode == 'one_shot' and is_joint_model:
+            outputs = pl_module._run_oneshot_inference(
+                anchor_data["batch"],
+                num_steps=pl_module.num_steps,
+                x_0=anchor_data["x_0"],
+                y_0=anchor_data["y_0"],
+                generator=gen,
+            )
+        elif pl_module.gen_mode == 'one_shot' and not is_joint_model:
+            outputs = pl_module._run_oneshot_inference(
+                anchor_data["batch"],
+                num_steps=pl_module.num_steps,
+                x_0=anchor_data["x_0"],
+                generator=gen,
+            )
+        elif pl_module.gen_mode == 'ar_rollout' and is_joint_model:
+            outputs = pl_module._run_ar_inference(
+                anchor_data["batch"],
+                num_steps=pl_module.num_steps,
+                y_0=anchor_data["y_0"],
+                generator=gen,
+            )
+        elif pl_module.gen_mode == 'ar_rollout' and not is_joint_model:
+            outputs = pl_module._run_ar_inference(
+                anchor_data["batch"],
+                num_steps=pl_module.num_steps,
+                generator=gen,
+            )
+
+        gen_full_pose, gen_full_trans, gen_severity, _ = unpack_inference_outputs(outputs)
+        gen_sev_val = gen_severity[0].item() if gen_severity is not None else None
+        
+        # Extract valid unpadded frames based on sequence length
+        l = anchor_data["batch"]['seq_len'][0].item()
+        gt_full_pose = anchor_data["batch"]['pose'][0, :l]
+        gt_full_trans = anchor_data["batch"]['trans'][0, :l]
+
+        # Reconstruct the exact Prior for visualization 
+        if pl_module.gen_mode == 'one_shot':
+            prior_full_pose = torch.cat([
+                gt_full_pose[:pl_module.prefix_len], 
+                anchor_data["x_0"]['pose'][0, pl_module.prefix_len:l]
+            ], dim=0)
+            
+            prior_full_trans = torch.cat([
+                gt_full_trans[:pl_module.prefix_len], 
+                anchor_data["x_0"]['trans'][0, pl_module.prefix_len:l]
+            ], dim=0)
+        else:
+            # For AR rollout, reconstruct the prior by generating it window-by-window with the same random seed
+            prior_gen = torch.Generator(device=pl_module.device).manual_seed(anchor_data["seed"])
+            
+            prior_pose = gt_full_pose[:pl_module.prefix_len].unsqueeze(0)
+            prior_trans = gt_full_trans[:pl_module.prefix_len].unsqueeze(0)
+            
+            curr_idx = pl_module.prefix_len
+            while curr_idx < l:
+                window_prefix_pose = gen_full_pose[curr_idx - pl_module.prefix_len : curr_idx].unsqueeze(0)
+                window_prefix_trans = gen_full_trans[curr_idx - pl_module.prefix_len : curr_idx].unsqueeze(0)
+                target_frames = min(pl_module.AR_window_size - pl_module.prefix_len, l - curr_idx)
+                
+                prior_dict = generate_motion_prior_from_prefix(
+                    window_prefix_pose, window_prefix_trans, target_frames, 
+                    s_scale=pl_module.prior_noise_scale, generator=prior_gen
+                )
+                
+                prior_pose = torch.cat([prior_pose, prior_dict['pose']], dim=1)
+                prior_trans = torch.cat([prior_trans, prior_dict['trans']], dim=1)
+                curr_idx += target_frames
+                
+            prior_full_pose = prior_pose[0]
+            prior_full_trans = prior_trans[0]
+        
+        seq_gt = forward_to_h36m(gt_full_pose, gt_full_trans, smpl_model, h36m_regressor, pl_module.device)
+        seq_prior = forward_to_h36m(prior_full_pose, prior_full_trans, smpl_model, h36m_regressor, pl_module.device)
+        seq_gen = forward_to_h36m(gen_full_pose, gen_full_trans, smpl_model, h36m_regressor, pl_module.device)
+        
+        gif_path = vis_dir / f"anchor_class_{sev_val}_epoch_{display_epoch}.gif"
+        render_three_way_gif(seq_gt, seq_prior, seq_gen, sev_val, gif_path, elev=55, azim=55, roll=135, gen_severity=gen_sev_val)
+        gif_paths.append(gif_path)
+
+    return gif_paths
+
 def format_and_convert(data_dict, cfg, is_joint_model=False, save_to_disk=False):
     """Processes generation outputs entirely in-memory. Optionally saves arrays for final tests."""
     rep = cfg['data'].get('representation', '6D')
@@ -55,16 +161,22 @@ def format_and_convert(data_dict, cfg, is_joint_model=False, save_to_disk=False)
     smpl_model = SMPL(model_path='thesis/data/care_pd_preprocessing/SMPL_NEUTRAL.pkl', num_betas=10).eval().to(device)
     h36m_regressor = torch.tensor(np.load('thesis/data/care_pd_preprocessing/J_regressor_h36m_correct.npy'), dtype=torch.float32).to(device)
 
-    gt_h36m_all = batched_to_h36m(data_dict["gt"]["pose"], data_dict["gt"]["trans"], smpl_model, h36m_regressor, device)
-    gen_h36m_all = batched_to_h36m(data_dict["gen"]["pose"], data_dict["gen"]["trans"], smpl_model, h36m_regressor, device)
+    gt_h36m_all = [
+        forward_to_h36m(pose_seq[0], trans_seq[0], smpl_model, h36m_regressor, device)
+        for pose_seq, trans_seq in zip(data_dict["gt"]["pose"], data_dict["gt"]["trans"])
+    ]
+    gen_h36m_all = [
+        forward_to_h36m(pose_seq[0], trans_seq[0], smpl_model, h36m_regressor, device)
+        for pose_seq, trans_seq in zip(data_dict["gen"]["pose"], data_dict["gen"]["trans"])
+    ]
 
     for i, gt_sev in enumerate(data_dict["severities"]):
         seq_key = f"seq_{i:03d}"
 
-        gt_pose_dict[seq_key] = data_dict["gt"]["pose"][i].cpu().numpy()
-        gt_pose_dict[f"{seq_key}_trans"] = data_dict["gt"]["trans"][i].cpu().numpy()
-        gen_pose_dict[seq_key] = data_dict["gen"]["pose"][i].cpu().numpy()
-        gen_pose_dict[f"{seq_key}_trans"] = data_dict["gen"]["trans"][i].cpu().numpy()
+        gt_pose_dict[seq_key] = data_dict["gt"]["pose"][i][0].cpu().numpy()
+        gt_pose_dict[f"{seq_key}_trans"] = data_dict["gt"]["trans"][i][0].cpu().numpy()
+        gen_pose_dict[seq_key] = data_dict["gen"]["pose"][i][0].cpu().numpy()
+        gen_pose_dict[f"{seq_key}_trans"] = data_dict["gen"]["trans"][i][0].cpu().numpy()
 
         gt_h36m_dict[seq_key] = gt_h36m_all[i]
         gen_h36m_dict[seq_key] = gen_h36m_all[i]

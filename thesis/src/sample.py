@@ -3,6 +3,8 @@ import numpy as np
 from tqdm.auto import tqdm
 from pathlib import Path
 
+from thesis.src.utils.pipeline_utils import unpack_inference_outputs
+
 
 def save_generated_to_npz(full_seq_pose, full_seq_trans, output_dir, filename="generated_PD_walk.npz"):
     out_path = Path(output_dir)
@@ -40,27 +42,29 @@ def generate_trajectories(model, dataloader, num_steps, device, max_batches=-1, 
             all_gt_pose.append(batch['pose'][b_idx:b_idx+1, :l].cpu())
             all_gt_trans.append(batch['trans'][b_idx:b_idx+1, :l].cpu())
         all_gt_severities.extend(batch['severity'].cpu().tolist())
-        
-        if model.gen_mode == 'one_shot':
-            gen_outputs = model._run_oneshot_inference(batch, num_steps, force_joint_conditioning)
-        else:
-            gen_outputs = model._run_ar_inference(batch, num_steps, force_joint_conditioning)
+
+        if is_joint_model and model.gen_mode == 'one_shot':
+            outputs = model._run_oneshot_inference(batch, num_steps, force_joint_conditioning=force_joint_conditioning)
+        elif is_joint_model and model.gen_mode == 'ar_rollout':
+            outputs = model._run_ar_inference(batch, num_steps, force_joint_conditioning=force_joint_conditioning)
+        elif not is_joint_model and model.gen_mode == 'one_shot':
+            outputs = model._run_oneshot_inference(batch, num_steps)
+        elif not is_joint_model and model.gen_mode == 'ar_rollout':
+            outputs = model._run_ar_inference(batch, num_steps)
+
+        gen_pose, gen_trans, gen_labels, y_0_prior = unpack_inference_outputs(outputs)
 
         if is_joint_model and force_joint_conditioning:
             # MGM-Cond: Force the severity score to match the ground truth prefix
-            gen_pose, gen_trans, gen_labels = gen_outputs
             all_prior_severities.extend(batch['severity'].cpu().tolist())
             all_gen_severities.extend(gen_labels.cpu().tolist())
             
         elif is_joint_model and not force_joint_conditioning:
             # MGM-Joint: Let the model predict its own severity score via jump process
-            gen_pose, gen_trans, gen_labels, y_0_prior = gen_outputs
             all_prior_severities.extend(y_0_prior.cpu().tolist())
             all_gen_severities.extend(gen_labels.cpu().tolist())
-            
         else:
             # CFM-Cond: Standard conditional model
-            gen_pose, gen_trans = gen_outputs[:2]
             all_prior_severities.extend(batch['severity'].cpu().tolist())
             all_gen_severities.extend(batch['severity'].cpu().tolist())
 

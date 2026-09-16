@@ -165,14 +165,14 @@ def add_noise(dict, std):
         'trans': dict['trans'] + torch.randn_like(dict['trans']) * std
     }
 
-def generate_x0(x_1_dict, prefix_len, s_scale):
+def generate_x0(x_1_dict, prefix_len, s_scale, generator=None):
     """Helper to generate prior noise efficiently bounded by the valid generative horizon."""
     prefix_pose = x_1_dict['pose'][:, :prefix_len]
     prefix_trans = x_1_dict['trans'][:, :prefix_len]
     num_frames_x0 = x_1_dict['pose'].shape[1] - prefix_len
 
     # Generate Brownian prior from prefix
-    x_0 = generate_motion_prior_from_prefix(prefix_pose, prefix_trans, num_frames_x0, s_scale)
+    x_0 = generate_motion_prior_from_prefix(prefix_pose, prefix_trans, num_frames_x0, s_scale, generator=generator)
     
     x_0_pose = torch.zeros_like(x_1_dict['pose'])
     x_0_trans = torch.zeros_like(x_1_dict['trans'])

@@ -207,6 +207,7 @@ class SMPLDataset(Dataset):
 class FullSequenceSMPLDataset(Dataset):
     """Dataset class for One-Shot Padded Flow (OS-SG) and AR-WG Evaluation.
     Yields zero-padded full sequences and respective boolean masks.
+    Extracts multiple windows for sequences longer than max_len during training.
     """
     def __init__(self, cfg, mode='train'):
         super().__init__()
@@ -217,6 +218,10 @@ class FullSequenceSMPLDataset(Dataset):
         self.min_z_travel = cfg['windowing'].get('min_z_travel', 0.0)
         self.filter_z_travel = cfg['windowing'].get('filter_z_travel', True)
         
+        # Stride for extracting multiple windows from long sequences.
+        # Defaults to max_len (non-overlapping). Set to max_len // 2 for 50% overlap.
+        self.stride = cfg['windowing'].get('full_seq_stride', self.max_len)
+
         eval_split = self.cfg['training'].get('eval_split', 0.1)
         test_split = self.cfg['training'].get('test_split', 0.2)
 
@@ -256,14 +261,40 @@ class FullSequenceSMPLDataset(Dataset):
         self.valid_keys, seq_stats = self._get_stratified_keys(
             all_keys=valid_pool_keys, mode=mode, eval_split=eval_split, test_split=test_split
         )
-        
-        # Group sequences of similar length for efficient validation/testing batches
+
+        # Build window index map
+        self.window_indices = []
+        chunk_counts = defaultdict(int)
+
+        for key in self.valid_keys:
+            num_frames = self.pose_data[key].shape[0]
+            base_key = key.split('_down')[0] if '_down' in key else key
+            sev = self.key_to_severity.get(base_key, 0)
+
+            if self.mode == 'train' and num_frames > self.max_len:
+                # Sliced window extraction across long sequences
+                starts = list(range(0, num_frames - self.max_len + 1, self.stride))
+                # Ensure the final frames are included if not aligned with stride
+                last_start = num_frames - self.max_len
+                if starts[-1] != last_start:
+                    starts.append(last_start)
+
+                for start_idx in starts:
+                    self.window_indices.append((key, start_idx))
+                    chunk_counts[sev] += 1
+            else:
+                # Single window: start at 0 (val/test, or training sequences <= max_len)
+                self.window_indices.append((key, 0))
+                chunk_counts[sev] += 1
+
+        # Sort sequences by length for efficient batching during eval/test
         if self.mode != 'train':
-            self.valid_keys.sort(key=lambda k: self.pose_data[k].shape[0])
-            
+            self.window_indices.sort(key=lambda item: self.pose_data[item[0]].shape[0])
+
         self._print_split_summary(
-            mode=mode, seq_stats=seq_stats, total_inspected=len(all_keys),
-            discarded_keys=self.discarded_keys, discarded_no_travel=discarded_no_travel
+            mode=mode, seq_stats=seq_stats, chunk_counts=chunk_counts,
+            total_inspected=len(all_keys), discarded_keys=self.discarded_keys,
+            discarded_no_travel=discarded_no_travel
         )
 
     def _get_stratified_keys(self, all_keys, mode, eval_split, test_split):
@@ -309,48 +340,41 @@ class FullSequenceSMPLDataset(Dataset):
                 discarded_no_travel.append(key)
         return valid_seq_keys, discarded_short, discarded_no_travel
 
-    def _print_split_summary(self, mode, seq_stats, total_inspected, discarded_keys, discarded_no_travel):
-        print(f"\n{mode.upper()} SET (Full Sequences)")
-        print(f" {'Severity':<10} | {'Sequences (Split / Total)':<26}")
-        print("-" * 40)
-        total_seq_selected = total_seq_all = 0
+    def _print_split_summary(self, mode, seq_stats, chunk_counts, total_inspected, discarded_keys, discarded_no_travel):
+        print(f"\n{mode.upper()} SET (Full Sequences / Windows)")
+        print(f" {'Severity':<10} | {'Sequences (Split / Total)':<26} | {'Samples/Epoch':<14}")
+        print("-" * 58)
+        total_seq_selected = total_seq_all = total_samples = 0
         for sev in sorted(seq_stats.keys()):
             sel_seq, all_seq = seq_stats[sev]
+            samples = chunk_counts.get(sev, 0)
             total_seq_selected += sel_seq
             total_seq_all += all_seq
-            print(f"  Class {sev:<4} | {f'{sel_seq} / {all_seq}':<26}")
+            total_samples += samples
+            print(f"  Class {sev:<4} | {f'{sel_seq} / {all_seq}':<26} | {samples:>12,}")
             
-        print("-" * 40)
-        print(f" {'TOTAL':<10} | {f'{total_seq_selected} / {total_seq_all}':<26}")
+        print("-" * 58)
+        print(f" {'TOTAL':<10} | {f'{total_seq_selected} / {total_seq_all}':<26} | {total_samples:>12,}")
         
         if discarded_no_travel: print(f"  * Excluded {len(discarded_no_travel)} sequence(s) from pool (Total Z-travel < {self.min_z_travel}m).")
         if discarded_keys: print(f"  * Discarded {len(discarded_keys)} short sequence(s) (<= prefix length).")
 
     def __len__(self):
-        return len(self.valid_keys)
+        return len(self.window_indices)
 
     def get_severity(self, idx):
-        key = self.valid_keys[idx]
+        key = self.window_indices[idx][0]
         base_key = key.split('_down')[0] if '_down' in key else key
         return self.key_to_severity.get(base_key, 0)
 
     def __getitem__(self, idx):
-        key = self.valid_keys[idx]
-        pose = self.pose_data[key]
-        trans = self.trans_data[key]
+        key, start_idx = self.window_indices[idx]
+        raw_pose = self.pose_data[key]
+        raw_trans = self.trans_data[key]
+
+        pose = raw_pose[start_idx:start_idx + self.max_len]
+        trans = raw_trans[start_idx:start_idx + self.max_len]
         T = pose.shape[0]
-
-        # For training: take random window up to max_len. For test/eval: start from frame 0
-        if self.mode == 'train' and T > self.max_len:
-            start_idx = random.randint(0, T - self.max_len)
-            pose = pose[start_idx:start_idx + self.max_len]
-            trans = trans[start_idx:start_idx + self.max_len]
-            T = self.max_len
-        elif T > self.max_len:
-            pose = pose[:self.max_len]
-            trans = trans[:self.max_len]
-            T = self.max_len
-
         pad_len = self.max_len - T
 
         if pad_len > 0:

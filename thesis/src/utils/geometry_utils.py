@@ -97,6 +97,7 @@ def forward_to_h36m(pose_tensor, trans, smpl_model, h36m_regressor, device):
         
     return h36m_joints.cpu().numpy()
 
+# TODO: make an equivalent that handles variable length sequences in a batch, e.g., (B, T, 24, D) 
 def batched_to_h36m(pose_tensor, trans, smpl_model, h36m_regressor, device, chunk_size=256):
     """Processes (Batch, Time, Joints, D) tensors efficiently in GPU chunks."""
     N, T, J, D = pose_tensor.shape

@@ -2,6 +2,7 @@ import math
 import torch
 import torch.nn.functional as F
 
+from thesis.src.generate_prior import generate_label_prior
 from thesis.src.model_conditional import ConditionalBaselineModel
 from thesis.src.model_backbones import (
     JointBaselineBackbone,
@@ -15,8 +16,12 @@ from thesis.src.model_backbones import (
     add_noise
 )
 
+
 def ctmc_jump_step(y_current, Q_pred, dt, num_classes):
-    """Simulates a CTMC jump step over time interval dt."""
+    """Simulates a CTMC jump step over time interval dt using exact holding-time probabilities.
+    
+    TODO: cite holderrieth generator matching for using he exact exponential holding-time scheduler
+    """
     Q_pred = Q_pred.float()
     
     # Ensure jump rates to other classes are non-negative
@@ -25,14 +30,21 @@ def ctmc_jump_step(y_current, Q_pred, dt, num_classes):
     mask = F.one_hot(y_current, num_classes=num_classes).bool()
     rates[mask] = 0.0
     
-    # Compute transition probabilities for dt: P(i -> j) = dt * Q_ij (for j != i)
-    probs = dt * rates
+    # Total exit rate: lambda_i = sum_{j != i} Q_ij
+    exit_rates = rates.sum(dim=-1, keepdim=True)
     
-    # Compute self-transition probability: P(i -> i) = 1 - sum(P(i -> j) (for j != i)
-    self_prob = (1.0 - probs.sum(dim=-1, keepdim=True)).clamp(min=0.0)
-    probs[mask] = self_prob.squeeze(-1)
+    # Exact continuous-time probabilities over interval dt
+    stay_prob = torch.exp(-exit_rates * dt)
+    jump_prob = 1.0 - stay_prob
     
-    # Normalize probabilities to avoid float precision errors and sample next state
+    # Distribute jump probability across candidate states proportional to their rates
+    jump_distribution = rates / (exit_rates + 1e-8)
+    probs = jump_prob * jump_distribution
+    
+    # Insert self-transition probability along the diagonal
+    probs[mask] = stay_prob.squeeze(-1)
+    
+    # Normalize to guard against floating-point rounding errors
     probs = probs / probs.sum(dim=-1, keepdim=True)
     return torch.multinomial(probs, num_samples=1).squeeze(-1)
 
@@ -41,8 +53,8 @@ class JointBaselineModel(ConditionalBaselineModel):
     """Multimodal joint generator model."""
     def __init__(self, cfg):
         super().__init__(cfg)
-        self.lambda_motion = cfg['training'].get('lambda_motion', 1.0)
-        self.lambda_label = cfg['training'].get('lambda_label', 1.0)
+        self.alpha_trans = cfg['training'].get('alpha_pose_trans', 0.15) 
+        self.alpha_label = cfg['training'].get('alpha_motion_label', 0.50)
         self.num_classes = cfg['model'].get('num_classes', 4)
         
         hidden_dim = cfg['model'].get('hidden_dim', 1024)
@@ -90,7 +102,10 @@ class JointBaselineModel(ConditionalBaselineModel):
         _, _, trans_dim = v_pred['trans'].shape
         valid_pose_elements = M_targ.sum() * num_joints * pose_dim + 1e-8
         valid_trans_elements = M_targ.sum() * trans_dim + 1e-8
-        
+
+        # note: loss_pose computes micro-average (per element)
+        # note: loss_label computes the macro-average (per sequence)
+        # TODO: keep in mind that this causes variability in loss magnitudes between motion and label losses
         loss_pose = F.mse_loss(v_pred_masked['pose'], u_true['pose'], reduction='sum') / valid_pose_elements
         loss_trans = F.mse_loss(v_pred_masked['trans'], u_true['trans'], reduction='sum') / valid_trans_elements
         loss_label = F.cross_entropy(Q_pred, y_target)
@@ -128,7 +143,8 @@ class JointBaselineModel(ConditionalBaselineModel):
         _, _, trans_dim = v_pred['trans'].shape
         valid_pose_elements = M_targ.sum() * num_joints * pose_dim + 1e-8
         valid_trans_elements = M_targ.sum() * trans_dim + 1e-8
-        
+
+        # see note on loss averaging in ar_rollout_loss method
         loss_pose = F.mse_loss(v_pred_masked['pose'], u_true['pose'], reduction='sum') / valid_pose_elements
         loss_trans = F.mse_loss(v_pred_masked['trans'], u_true['trans'], reduction='sum') / valid_trans_elements
         loss_label = F.cross_entropy(Q_pred, y_target)
@@ -143,29 +159,18 @@ class JointBaselineModel(ConditionalBaselineModel):
         else:
             loss_pose, loss_trans, loss_label = self._compute_ar_rollout_loss(batch)
 
-        loss_motion = (self.lambda_pose * loss_pose) + (self.lambda_trans * loss_trans)
-        loss_total = (self.lambda_motion * loss_motion) + (self.lambda_label * loss_label)
+        loss_motion = ((1.0 - self.alpha_trans) * loss_pose) + (self.alpha_trans * loss_trans)
+        loss_total = ((1.0 - self.alpha_label) * loss_motion) + (self.alpha_label * loss_label)
         
         self.log("train/loss_motion", loss_motion, on_step=False, on_epoch=True)
         self.log("train/loss_label", loss_label, on_step=False, on_epoch=True)
         self.log("train/loss_total", loss_total, on_step=False, on_epoch=True)
         return loss_total
 
-    def generate_suffix(self, x_tau, severity_score, M_targ, num_steps=100):
+    def solve_ODE(self, x_tau, y_tau, M_targ, num_steps=100, sample_labels=True):
+        """Euler ODE Solver strictly masking velocity updates to prevent prefix drift + label sampling."""
         batch_size = x_tau['pose'].shape[0]
-        num_classes = self.cfg['model'].get('num_classes', 4)
         dt = 1.0 / num_steps
-
-        if severity_score is not None and not self.training:
-            # Don't sample severity score, MGM-Cond 
-            y_tau = severity_score.clone()
-            sample_labels = False
-            y_0 = None
-        else:
-            # sample initial severity score randomly
-            y_0 = torch.randint(0, num_classes, (batch_size,), device=self.device)
-            sample_labels = True
-            y_tau = y_0.clone()
 
         for step in range(num_steps):
             tau = step * dt
@@ -177,30 +182,41 @@ class JointBaselineModel(ConditionalBaselineModel):
             x_tau = add(x_tau, mul(v_pred_masked, torch.tensor([dt], device=self.device)))
             
             if sample_labels:
-                y_tau = ctmc_jump_step(y_tau, Q_theta, dt, num_classes)
+                y_tau = ctmc_jump_step(y_tau, Q_theta, dt, self.num_classes)
 
-        return x_tau, y_tau, y_0
+        return x_tau, y_tau
 
-    def _run_oneshot_inference(self, batch, num_steps=100, force_joint_conditioning=False):
+    def _run_oneshot_inference(self, batch, num_steps=100, force_joint_conditioning=False, x_0=None, y_0=None, generator=None):
         """Generates the target sequence and discrete labels globally in a single pass."""
         true_dict = {'pose': batch['pose'], 'trans': batch['trans']}
+        batch_size = batch['severity'].shape[0]
         
         M_cond = batch['cond_mask']
         M_pad = batch['pad_mask']
         M_static = M_cond | M_pad
         M_targ = ~M_static
         
-        x_0 = generate_x0(true_dict, self.prefix_len, self.prior_noise_scale)
+        if x_0 is None:
+            x_0 = generate_x0(true_dict, self.prefix_len, self.prior_noise_scale, generator=generator)
+
         x_tau = add(mask(true_dict, M_static), mask(x_0, M_targ))
         
-        initial_condition = batch['severity'] if force_joint_conditioning else None
-        gen_dict, gen_labels, y_0 = self.generate_suffix(x_tau, initial_condition, M_targ, num_steps)
-        
         if force_joint_conditioning:
-            return gen_dict['pose'], gen_dict['trans'], gen_labels
-        return gen_dict['pose'], gen_dict['trans'], gen_labels, y_0
+            y_tau = batch['severity'].clone()
+            sample_labels = False
+            y_0_prior = y_tau.clone()
+        else:
+            if y_0 is None:
+                y_0 = generate_label_prior(batch_size, self.num_classes, self.device, generator=generator)
+            y_tau = y_0.clone()
+            sample_labels = True
+            y_0_prior = y_0.clone()
 
-    def _run_ar_inference(self, batch, num_steps=100, force_joint_conditioning=False):
+        gen_dict, gen_labels = self.solve_ODE(x_tau, y_tau, M_targ, num_steps, sample_labels=sample_labels)
+        
+        return gen_dict['pose'], gen_dict['trans'], gen_labels, y_0_prior
+
+    def _run_ar_inference(self, batch, num_steps=100, force_joint_conditioning=False, y_0=None, generator=None):
         """Generates the target sequence autoregressively and solves CTMC on the first window."""
         true_dict = {'pose': batch['pose'], 'trans': batch['trans']}
         batch_size = batch['severity'].shape[0]
@@ -221,8 +237,16 @@ class JointBaselineModel(ConditionalBaselineModel):
         num_windows = max(1, math.ceil(total_target_frames / frames_per_window))
         steps_per_window = max(1, num_steps // num_windows)
 
-        current_labels = batch['severity'] if force_joint_conditioning else None
-        y_0_prior = None
+        if force_joint_conditioning:
+            current_labels = batch['severity'].clone()
+            sample_labels = False
+            y_0_prior = current_labels.clone()
+        else:
+            if y_0 is None:
+                y_0 = generate_label_prior(batch_size, self.num_classes, self.device, generator=generator)
+            current_labels = y_0.clone()
+            sample_labels = True
+            y_0_prior = y_0.clone()
         
         while gen_pose.shape[1] < max_seq_length:
             window_pose = torch.zeros((batch_size, self.AR_window_size, num_joints, pose_dim), device=self.device)
@@ -232,22 +256,17 @@ class JointBaselineModel(ConditionalBaselineModel):
             window_trans[:, :self.prefix_len] = gen_trans[:, -self.prefix_len:]
             x1_window = {'pose': window_pose, 'trans': window_trans}
             
-            x0_window = generate_x0(x1_window, self.prefix_len, self.prior_noise_scale)
+            x0_window = generate_x0(x1_window, self.prefix_len, self.prior_noise_scale, generator=generator)
             x_tau = add(mask(x1_window, M_cond), mask(x0_window, M_targ))
             
-            x1, gen_labels, y_0 = self.generate_suffix(x_tau, current_labels, M_targ, steps_per_window)
+            x1, current_labels = self.solve_ODE(x_tau, current_labels, M_targ, steps_per_window, sample_labels=sample_labels)
             
-            # Capture the completely unconditioned prior only on the first window
-            if y_0_prior is None:
-                y_0_prior = y_0
-                
-            current_labels = gen_labels
+            # TODO: remember we have to freeze labels after the first generated window
+            # Model can only be trained to flow noise to posterior, not to flow posterior again to posterior
+            sample_labels = False
 
             gen_pose = torch.cat([gen_pose, x1['pose'][:, self.prefix_len:]], dim=1)
             gen_trans = torch.cat([gen_trans, x1['trans'][:, self.prefix_len:]], dim=1)
-        
-        if force_joint_conditioning:
-            return gen_pose[:, :max_seq_length], gen_trans[:, :max_seq_length], current_labels
         
         return gen_pose[:, :max_seq_length], gen_trans[:, :max_seq_length], current_labels, y_0_prior
 
@@ -260,7 +279,7 @@ class JointBaselineModel(ConditionalBaselineModel):
             outputs = self._run_oneshot_inference(batch, self.num_steps)
         elif self.gen_mode == 'ar_rollout':
             outputs = self._run_ar_inference(batch, self.num_steps)
-        gen_pose, gen_trans, gen_labels = outputs[:3]
+        gen_pose, gen_trans, gen_labels, _ = outputs
 
         # Extract only the valid frames per sequence
         gt_pose_list, gen_pose_list, gt_trans_list, gen_trans_list = [], [], [], []

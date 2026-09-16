@@ -25,8 +25,8 @@ class ConditionalBaselineModel(pl.LightningModule):
         self.cfg = cfg
         self.gen_mode = cfg['model'].get('generation_mode', 'ar_rollout')
         self.lr = cfg['training'].get('learning_rate', 0.001)
-        self.lambda_pose = cfg['training'].get('lambda_pose', 1.0)
-        self.lambda_trans = cfg['training'].get('lambda_trans', 1.0)
+        self.alpha_trans = cfg['training'].get('alpha_pose_trans', 0.15) 
+        self.alpha_label = cfg['training'].get('alpha_motion_label', 0.50)
         self.num_steps = cfg['sampling'].get('num_steps', 100)
 
         self.AR_window_size = self.cfg['windowing'].get('total_window_size', 60)
@@ -127,14 +127,14 @@ class ConditionalBaselineModel(pl.LightningModule):
         elif self.gen_mode == 'ar_rollout':
             loss_pose, loss_trans = self._compute_ar_rollout_loss(batch)
 
-        loss_total = (self.lambda_pose * loss_pose) + (self.lambda_trans * loss_trans)
+        loss_total = ((1.0 - self.alpha_trans) * loss_pose) + (self.alpha_trans * loss_trans)
         
         self.log("train/loss_pose", loss_pose, on_step=False, on_epoch=True)
         self.log("train/loss_trans", loss_trans, on_step=False, on_epoch=True)
         self.log("train/loss_total", loss_total, on_step=False, on_epoch=True)
         return loss_total
 
-    def generate_suffix(self, x_tau, severity_score, M_targ, num_steps=100):
+    def solve_ODE(self, x_tau, severity_score, M_targ, num_steps=100):
         """Euler ODE Solver strictly masking velocity updates to prevent prefix drift."""
         batch_size = x_tau['pose'].shape[0]
         dt = 1.0 / num_steps
@@ -150,7 +150,7 @@ class ConditionalBaselineModel(pl.LightningModule):
                 
         return x_tau
 
-    def _run_oneshot_inference(self, batch, num_steps=100, force_joint_conditioning=False):
+    def _run_oneshot_inference(self, batch, num_steps=100, x_0=None, generator=None):
         """Generates the target sequence globally in a single pass."""
         true_dict = {'pose': batch['pose'], 'trans': batch['trans']}
         severity_score = batch['severity']
@@ -160,13 +160,15 @@ class ConditionalBaselineModel(pl.LightningModule):
         M_static = M_cond | M_pad
         M_targ = ~M_static
         
-        x_0 = generate_x0(true_dict, self.prefix_len, self.prior_noise_scale)
+        if x_0 is None:
+            x_0 = generate_x0(true_dict, self.prefix_len, self.prior_noise_scale, generator=generator)
+
         x_tau = add(mask(true_dict, M_static), mask(x_0, M_targ))
+        gen_dict = self.solve_ODE(x_tau, severity_score, M_targ, num_steps)
         
-        gen_dict = self.generate_suffix(x_tau, severity_score, M_targ, num_steps)
         return gen_dict['pose'], gen_dict['trans']
 
-    def _run_ar_inference(self, batch, num_steps=100, force_joint_conditioning=False):
+    def _run_ar_inference(self, batch, num_steps=100, generator=None):
         """Generates the target sequence autoregressively using sliding windows."""
         true_dict = {'pose': batch['pose'], 'trans': batch['trans']}
         severity_score = batch['severity']
@@ -197,10 +199,10 @@ class ConditionalBaselineModel(pl.LightningModule):
             window_trans[:, :self.prefix_len] = gen_trans[:, -self.prefix_len:]
             x1_window = {'pose': window_pose, 'trans': window_trans}
             
-            x0_window = generate_x0(x1_window, self.prefix_len, self.prior_noise_scale)
+            x0_window = generate_x0(x1_window, self.prefix_len, self.prior_noise_scale, generator=generator)
             x_tau = add(mask(x1_window, M_cond), mask(x0_window, M_targ))
             
-            x1 = self.generate_suffix(x_tau, severity_score, M_targ, steps_per_window)
+            x1 = self.solve_ODE(x_tau, severity_score, M_targ, steps_per_window)
 
             # Concat new generated frames to current sequence total until we pass max sequence length in batch
             gen_pose = torch.cat([gen_pose, x1['pose'][:, self.prefix_len:]], dim=1)

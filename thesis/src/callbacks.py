@@ -1,3 +1,5 @@
+from unittest import case
+
 import numpy as np
 from pathlib import Path
 from collections import defaultdict
@@ -10,12 +12,16 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import Callback
 from smplx.body_models import SMPL
 
+from thesis.src.model_backbones import generate_x0
+from thesis.src.generate_prior import generate_label_prior
 from thesis.src.sample import generate_trajectories
 from thesis.src.evaluate_smpl import SMPLEvaluator
-from thesis.src.generate_prior import generate_motion_prior_from_prefix
-from thesis.src.utils.geometry_utils import forward_to_h36m
-from thesis.src.utils.pipeline_utils import format_and_convert, evaluate_and_plot_distributions, plot_physical_realism_tracking
-from thesis.src.utils.rendering.render_h36m_gif import render_three_way_gif
+from thesis.src.utils.pipeline_utils import (
+    format_and_convert, 
+    evaluate_and_plot_distributions, 
+    plot_physical_realism_tracking,
+    render_anchor_gifs,
+)
 
 
 class EpochAndValPrintCallback(Callback):
@@ -30,30 +36,24 @@ class EpochAndValPrintCallback(Callback):
         if epoch % self.train_interval == 0:
             loss = trainer.callback_metrics.get("train/loss_total")
             loss_val = f"{loss.item():.4f}" if loss is not None else "N/A"
-            print(f"Epoch {epoch:04d}/{trainer.max_epochs} | Train Loss: {loss_val}")
+            print(f"Epoch {epoch:03d} | Train Loss: {loss_val}")
 
     def on_validation_epoch_end(self, trainer, pl_module):
-        if trainer.sanity_checking: return
         epoch = trainer.current_epoch + 1
         if epoch % self.val_interval == 0:
             mpjae = trainer.callback_metrics.get("val/mpjae_deg")
-            acc = trainer.callback_metrics.get("val/label_accuracy")
-            
-            mpjae_str = f"{mpjae.item():.2f} deg" if mpjae is not None else "N/A"
-            
-            if acc is not None:
-                print(f" >>> VALIDATION Epoch {epoch:04d} | MPJAE: {mpjae_str} | Label Acc: {acc.item():.4f}")
-            else:
-                print(f" >>> VALIDATION Epoch {epoch:04d} | MPJAE: {mpjae_str}")
+            mpjae_val = f"{mpjae.item():.2f}" if mpjae is not None else "N/A"
+            print(f"Epoch {epoch:03d} | Val MPJAE: {mpjae_val} deg")
 
 
 class WandBEvaluationCallback(Callback):
-    """Evaluates generated distributions and Anchor GIFs entirely in RAM."""
+    """Evaluates generated distributions and renders visualizations/ example sequence GIFs."""
     def __init__(self, cfg, eval_interval=50):
         super().__init__()
         self.cfg = cfg
         self.eval_interval = eval_interval
         self.is_joint_model = cfg['model'].get('is_joint_model', False)
+        self.gen_mode = cfg['model'].get('generation_mode', 'ar_rollout')
         self.anchors = {}
         
         self.val_epochs = []
@@ -71,26 +71,54 @@ class WandBEvaluationCallback(Callback):
         self.smpl_evaluator = SMPLEvaluator(fps=30)
 
     def _sample_anchors(self, trainer, pl_module):
-        """Samples and caches 1 anchor sequence per class."""
-        val_loader = trainer.val_dataloaders
-        if isinstance(val_loader, list): val_loader = val_loader[0]
+        """Samples and caches 1 anchor sequence per class.
         
+        For one-shot generation, pre-computes x_0 for each anchor. 
+        For AR rollout, x_0 cannot be pre-computed and will be generated per window.
+        """
+        val_loader = trainer.val_dataloaders
+        if isinstance(val_loader, list): 
+            val_loader = val_loader[0]
+
         print("\n[W&B Callback] Sampling Anchor Sequences across Severity Classes...")
         candidates = defaultdict(list)
-        for prefix, target, severity in val_loader:
-            for b_idx in range(severity.shape[0]):
-                sev_val = severity[b_idx].item()
-                pref_single = {k: v[b_idx:b_idx+1].cpu() for k, v in prefix.items()}
-                targ_single = {k: v[b_idx:b_idx+1].cpu() for k, v in target.items()}
-                candidates[sev_val].append((pref_single, targ_single))
+        for batch in val_loader:
+            batch_size = batch['severity'].shape[0]
+            for batch_idx in range(batch_size):
+                sev_val = batch['severity'][batch_idx].item()
+               
+                single_sequence = {
+                    k: (v[batch_idx:batch_idx+1].cpu() if torch.is_tensor(v) 
+                        else (v[batch_idx] if isinstance(v, list) else v))
+                    for k, v in batch.items()
+                }
+                candidates[sev_val].append(single_sequence)
                 
+        # Randomly select one anchor sequence per severity class
         for sev_val in sorted(candidates.keys()):
-            pref_single, targ_single = random.choice(candidates[sev_val])
-            pref_single = {k: v.to(pl_module.device) for k, v in pref_single.items()}
-            targ_single = {k: v.to(pl_module.device) for k, v in targ_single.items()}
-            x_0 = generate_motion_prior_from_prefix(pref_single, targ_single)
-            self.anchors[sev_val] = {"prefix": pref_single, "x_0": x_0, "target": targ_single, "severity": sev_val}
-            print(f"  -> Locked Random Anchor for Severity Class {sev_val}")
+            single_sequence = {
+                k: v.to(pl_module.device) if torch.is_tensor(v) else v 
+                for k, v in random.choice(candidates[sev_val]).items()
+            }
+            
+            # Generate and store a fixed random seed
+            seed = random.randint(0, 1024)
+            gen = torch.Generator(device=pl_module.device).manual_seed(seed)
+            
+            # Pre-compute x_0 for one-shot, keep None for AR rollout (will be generated per window)
+            x_0 = None
+            if self.gen_mode == 'one_shot':
+                x_0 = generate_x0(single_sequence, pl_module.prefix_len, pl_module.prior_noise_scale, generator=gen)
+                
+            y_0 = generate_label_prior(1, self.cfg['model'].get('num_classes', 4), pl_module.device, generator=gen)
+
+            self.anchors[sev_val] = {
+                "batch": single_sequence,
+                "seed": seed,
+                "x_0": x_0,
+                "y_0": y_0
+            }
+            print(f"  -> Locked Random Anchor (Seed: {seed}) for Severity Class {sev_val}")
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if trainer.sanity_checking: return
@@ -126,7 +154,10 @@ class WandBEvaluationCallback(Callback):
         is_overfit = self.cfg['training'].get('overfit_severity_class', -1) >= 0
 
         # Compute MPJAE
-        mpjae_rad = self.smpl_evaluator.compute_mpjae(data_dict["gt"]["pose"], data_dict["gen"]["pose"])
+        flat_gt_pose = torch.cat(data_dict["gt"]["pose"], dim=1)
+        flat_gen_pose = torch.cat(data_dict["gen"]["pose"], dim=1)
+        
+        mpjae_rad = self.smpl_evaluator.compute_mpjae(flat_gt_pose, flat_gen_pose)
         mpjae_deg = mpjae_rad * (180.0 / np.pi)
     
         wandb_logs = {
@@ -171,33 +202,16 @@ class WandBEvaluationCallback(Callback):
         self.smpl_model = self.smpl_model.to(pl_module.device)
         self.h36m_regressor = self.h36m_regressor.to(pl_module.device)
         
-        gif_paths = []
-        for sev_val, anchor_data in self.anchors.items():
-            if self.is_joint_model:
-                gen_suffix, gen_severity = pl_module.generate_suffix(
-                    anchor_data["prefix"], anchor_data["x_0"], severity_score=None, num_steps=self.cfg['sampling']['num_steps']
-                )
-                gen_sev_val = gen_severity[0].item()
-            else:
-                gen_suffix = pl_module.generate_suffix(
-                    anchor_data["prefix"], anchor_data["x_0"], severity_score=torch.tensor([sev_val]).to(pl_module.device), num_steps=self.cfg['sampling']['num_steps']
-                )
-                gen_sev_val = None
-                
-            gt_full_pose = torch.cat([anchor_data["prefix"]['pose'], anchor_data["target"]['pose']], dim=1)[0]
-            gt_full_trans = torch.cat([anchor_data["prefix"]['trans'], anchor_data["target"]['trans']], dim=1)[0]
-            prior_full_pose = torch.cat([anchor_data["prefix"]['pose'], anchor_data["x_0"]['pose']], dim=1)[0]
-            prior_full_trans = torch.cat([anchor_data["prefix"]['trans'], anchor_data["x_0"]['trans']], dim=1)[0]
-            gen_full_pose = torch.cat([anchor_data["prefix"]['pose'], gen_suffix['pose']], dim=1)[0]
-            gen_full_trans = torch.cat([anchor_data["prefix"]['trans'], gen_suffix['trans']], dim=1)[0]
-            
-            seq_gt = forward_to_h36m(gt_full_pose, gt_full_trans, self.smpl_model, self.h36m_regressor, pl_module.device)
-            seq_prior = forward_to_h36m(prior_full_pose, prior_full_trans, self.smpl_model, self.h36m_regressor, pl_module.device)
-            seq_gen = forward_to_h36m(gen_full_pose, gen_full_trans, self.smpl_model, self.h36m_regressor, pl_module.device)
-            
-            gif_path = self.vis_dir / f"anchor_class_{sev_val}_epoch_{display_epoch}.gif"
-            render_three_way_gif(seq_gt, seq_prior, seq_gen, sev_val, gif_path, elev=55, azim=55, roll=135, gen_severity=gen_sev_val)
-            gif_paths.append(gif_path)
+        gif_paths = render_anchor_gifs(
+            anchors=self.anchors,
+            pl_module=pl_module,
+            is_joint_model=self.is_joint_model,
+            vis_dir=self.vis_dir,
+            smpl_model=self.smpl_model,
+            h36m_regressor=self.h36m_regressor,
+            display_epoch=display_epoch
+        )
+
         print(f"  [Time] Anchor GIF Rendering: {time.time() - gif_start:.2f}s")
 
         # Log all metrics and GIFs to W&B

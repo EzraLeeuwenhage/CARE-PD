@@ -4,7 +4,7 @@ import torch
 from pathlib import Path
 
 
-def generate_motion_prior_from_prefix(prefix_pose, prefix_trans, num_frames, s_scale=1.0):
+def generate_motion_prior_from_prefix(prefix_pose, prefix_trans, num_frames, s_scale=1.0, generator=None):
     """
     Generates x_0 using an STFlow-inspired kinematic random walk.
     Translation uses full drift + noise. Pose uses zero-drift + noise.
@@ -19,9 +19,9 @@ def generate_motion_prior_from_prefix(prefix_pose, prefix_trans, num_frames, s_s
     sigma_trans = torch.nan_to_num(sigma_trans, 1e-4) 
     
     time_steps = torch.arange(1, num_frames + 1, device=device).view(1, -1, 1)
-    z_trans = torch.randn(batch_size, num_frames, 3, device=device)
-    random_walk_trans = torch.cumsum(z_trans, dim=1)
-    trans_0 = prefix_trans[:, -1:, :] + (time_steps * mu_trans) + (sigma_trans * random_walk_trans)
+    trans_noise_increments = torch.randn(batch_size, num_frames, 3, device=device, generator=generator)
+    trans_cumulative_noise = torch.cumsum(trans_noise_increments, dim=1)
+    trans_0 = prefix_trans[:, -1:, :] + (time_steps * mu_trans) + (sigma_trans * trans_cumulative_noise)
     
     # Pose prior
     pose_vel = prefix_pose[:, 1:, :, :] - prefix_pose[:, :-1, :, :]
@@ -31,14 +31,18 @@ def generate_motion_prior_from_prefix(prefix_pose, prefix_trans, num_frames, s_s
     # Dynamically extract spatial dimensions from the prefix tensor
     _, _, num_joints, pose_dim = prefix_pose.shape
     
-    z_pose = torch.randn(batch_size, num_frames, num_joints, pose_dim, device=device)
-    random_walk_pose = torch.cumsum(z_pose, dim=1)
-    pose_0 = prefix_pose[:, -1:, :, :] + (sigma_pose * random_walk_pose)
+    pose_noise_increments = torch.randn(batch_size, num_frames, num_joints, pose_dim, device=device, generator=generator)
+    pose_cumulative_noise = torch.cumsum(pose_noise_increments, dim=1)
+    pose_0 = prefix_pose[:, -1:, :, :] + (sigma_pose * pose_cumulative_noise)
     
     return {
         'pose': pose_0,
         'trans': trans_0
     }
+
+def generate_label_prior(batch_size, num_classes, device, generator=None):
+    """Generates uniform random noise for categorical label state space."""
+    return torch.randint(0, num_classes, (batch_size,), device=device, generator=generator)
 
 
 if __name__ == "__main__":
@@ -48,22 +52,28 @@ if __name__ == "__main__":
     from thesis.src.care_pd.smpl2h36m import convert_smpl_to_h36m
 
     print("Initializing Dataloader...")
-    cfg = load_config("thesis/configs/baseline.yaml")
+    cfg = load_config("thesis/configs/baseline_3d.yaml")
     loader = get_dataloader(cfg, mode='test')
-    prefix, target, severity = next(iter(loader))
+    batch = next(iter(loader))
     
-    # Extract just the first sample from the batch
+    prefix_len = cfg['windowing']['prefix_length']
+    
+    # Extract prefix and target sequences for the first sample
     prefix_single = {
-        'pose': prefix['pose'][0:1],
-        'trans': prefix['trans'][0:1]
+        'pose': batch['pose'][0:1, :prefix_len],
+        'trans': batch['trans'][0:1, :prefix_len]
     }
     target_single = {
-        'pose': target['pose'][0:1],
-        'trans': target['trans'][0:1]
+        'pose': batch['pose'][0:1, prefix_len:],
+        'trans': batch['trans'][0:1, prefix_len:]
     }
     
     print("Generating Prior from Prefix...")
-    x_0 = generate_motion_prior_from_prefix(prefix_single, target_single)
+    x_0 = generate_motion_prior_from_prefix(
+        prefix_single['pose'], 
+        prefix_single['trans'], 
+        num_frames=target_single['pose'].shape[1]
+    )
     
     # Concat true prefix with generated suffix
     full_seq_6d = torch.cat([prefix_single['pose'], x_0['pose']], dim=1)
