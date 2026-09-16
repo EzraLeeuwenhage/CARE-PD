@@ -25,8 +25,8 @@ class ConditionalBaselineModel(pl.LightningModule):
         self.cfg = cfg
         self.gen_mode = cfg['model'].get('generation_mode', 'ar_rollout')
         self.lr = cfg['training'].get('learning_rate', 0.001)
-        self.alpha_trans = cfg['training'].get('alpha_pose_trans', 0.15) 
-        self.alpha_label = cfg['training'].get('alpha_motion_label', 0.50)
+        self.alpha_trans = cfg['training'].get('alpha_trans', 0.15) 
+        self.alpha_label = cfg['training'].get('alpha_label', 0.50)
         self.num_steps = cfg['sampling'].get('num_steps', 100)
 
         self.AR_window_size = self.cfg['windowing'].get('total_window_size', 60)

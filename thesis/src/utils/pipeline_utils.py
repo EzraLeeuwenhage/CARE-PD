@@ -95,6 +95,8 @@ def render_anchor_gifs(anchors, pl_module, is_joint_model, vis_dir, smpl_model, 
         l = anchor_data["batch"]['seq_len'][0].item()
         gt_full_pose = anchor_data["batch"]['pose'][0, :l]
         gt_full_trans = anchor_data["batch"]['trans'][0, :l]
+        gen_full_pose = gen_full_pose[0, :l]
+        gen_full_trans = gen_full_trans[0, :l]
 
         # Reconstruct the exact Prior for visualization 
         if pl_module.gen_mode == 'one_shot':
@@ -137,7 +139,7 @@ def render_anchor_gifs(anchors, pl_module, is_joint_model, vis_dir, smpl_model, 
         seq_gen = forward_to_h36m(gen_full_pose, gen_full_trans, smpl_model, h36m_regressor, pl_module.device)
         
         gif_path = vis_dir / f"anchor_class_{sev_val}_epoch_{display_epoch}.gif"
-        render_three_way_gif(seq_gt, seq_prior, seq_gen, sev_val, gif_path, elev=55, azim=55, roll=135, gen_severity=gen_sev_val)
+        render_three_way_gif(seq_gt, seq_prior, seq_gen, sev_val, gif_path, gen_severity=gen_sev_val)
         gif_paths.append(gif_path)
 
     return gif_paths

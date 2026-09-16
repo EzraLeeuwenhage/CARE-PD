@@ -53,8 +53,8 @@ class JointBaselineModel(ConditionalBaselineModel):
     """Multimodal joint generator model."""
     def __init__(self, cfg):
         super().__init__(cfg)
-        self.alpha_trans = cfg['training'].get('alpha_pose_trans', 0.15) 
-        self.alpha_label = cfg['training'].get('alpha_motion_label', 0.50)
+        self.alpha_trans = cfg['training'].get('alpha_trans', 0.15) 
+        self.alpha_label = cfg['training'].get('alpha_label', 0.50)
         self.num_classes = cfg['model'].get('num_classes', 4)
         
         hidden_dim = cfg['model'].get('hidden_dim', 1024)

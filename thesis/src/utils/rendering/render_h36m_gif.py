@@ -18,93 +18,29 @@ h36m_joint_paths = [
     [8, 14, 15, 16]
 ]
 
-def render_side_by_side_gif(prior_seq, gen_seq, severity, output_path, fps=15, elev=55, azim=55, roll=135):
-    """
-    Headlessly renders a side-by-side 3D comparison of Prior vs Generated motion.
-    
-    Args:
-        prior_seq (np.ndarray): Shape (T, 17, 3) - The prefix + generated prior.
-        gen_seq (np.ndarray): Shape (T, 17, 3) - The prefix + generated suffix.
-        severity (int): The clinical severity class.
-        output_path (str): Where to save the resulting .gif.
-    """
-    num_frames = min(prior_seq.shape[0], gen_seq.shape[0])
-    
-    # Calculate global boundaries so the camera doesn't jump around
-    all_data = np.concatenate([prior_seq, gen_seq], axis=0)
-    min_x, min_y, min_z = np.min(all_data, axis=(0, 1))
-    max_x, max_y, max_z = np.max(all_data, axis=(0, 1))
-    
-    x_range, y_range, z_range = max_x - min_x, max_y - min_y, max_z - min_z
-    aspect_ratio = [x_range, y_range, z_range]
-
-    fig = plt.figure(figsize=(10, 5))
-    fig.suptitle(f"Epoch Evolution | Severity Class: {severity}", fontsize=14, fontweight='bold')
-    
-    ax_prior = fig.add_subplot(121, projection='3d')
-    ax_gen = fig.add_subplot(122, projection='3d')
-
-    def setup_axis(ax, title):
-        ax.view_init(elev=elev, azim=azim, roll=roll)
-        ax.set_xlim3d([min_x, max_x])
-        ax.set_ylim3d([min_y, max_y])
-        ax.set_zlim3d([min_z, max_z])
-        ax.set_box_aspect(aspect_ratio)
-        ax.set_title(title, fontsize=12)
-        # Remove tick labels for a cleaner look
-        ax.set_xticklabels([])
-        ax.set_yticklabels([])
-        ax.set_zticklabels([])
-
-    def update(frame):
-        ax_prior.clear()
-        ax_gen.clear()
-        
-        # Change the titles depending on what you pass in
-        setup_axis(ax_prior, f"Reference Sequence\nFrame: {frame}/{num_frames}")
-        setup_axis(ax_gen, f"Generated Suffix (Model Output)\nFrame: {frame}/{num_frames}")
-
-        # Draw Reference (Prior or GT)
-        for joint_path in h36m_joint_paths:
-            x = [prior_seq[frame, j, 0] for j in joint_path]
-            y = [prior_seq[frame, j, 1] for j in joint_path]
-            z = [prior_seq[frame, j, 2] for j in joint_path]
-            ax_prior.plot(x, y, z, color='grey', linewidth=2, marker='o', markersize=3)
-            
-        # Draw Generated Output
-        for joint_path in h36m_joint_paths:
-            x = [gen_seq[frame, j, 0] for j in joint_path]
-            y = [gen_seq[frame, j, 1] for j in joint_path]
-            z = [gen_seq[frame, j, 2] for j in joint_path]
-            ax_gen.plot(x, y, z, color='salmon', linewidth=2, marker='o', markersize=3)
-
-    interval = int((1 / fps) * 1000)
-    
-    ani = FuncAnimation(fig, update, frames=num_frames, interval=interval)
-    
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    ani.save(output_path, writer='pillow', fps=fps)
-    plt.close(fig)
-    
-    return output_path
-
-def render_three_way_gif(gt_seq, prior_seq, gen_seq, severity, output_path, fps=15, elev=55, azim=55, roll=135, gen_severity=None):
-    """
-    Headlessly renders a 3-panel 3D comparison of GT vs Prior vs Generated motion.
-    """
+def render_three_way_gif(gt_seq, prior_seq, gen_seq, severity, output_path, fps=15, elev=35, azim=110, roll=0, gen_severity=None):
     num_frames = min(gt_seq.shape[0], prior_seq.shape[0], gen_seq.shape[0])
     
-    # Calculate global boundaries across all 3 sequences so the camera doesn't jump
-    all_data = np.concatenate([gt_seq, prior_seq, gen_seq], axis=0)
-    min_x, min_y, min_z = np.min(all_data, axis=(0, 1))
-    max_x, max_y, max_z = np.max(all_data, axis=(0, 1))
+    # Pool all 3 sequences across all frames and joints
+    all_x = np.concatenate([gt_seq[:, :, 0], prior_seq[:, :, 0], gen_seq[:, :, 0]])  # Lateral
+    all_y = np.concatenate([gt_seq[:, :, 2], prior_seq[:, :, 2], gen_seq[:, :, 2]])  # Forward Travel
+    all_z = np.concatenate([gt_seq[:, :, 1], prior_seq[:, :, 1], gen_seq[:, :, 1]])  # Vertical Height
     
-    x_range, y_range, z_range = max_x - min_x, max_y - min_y, max_z - min_z
+    # Dynamic limits with safety margins
+    x_pad, y_pad, z_pad = 0.4, 0.5, 0.2
+    x_min, x_max = float(np.min(all_x) - x_pad), float(np.max(all_x) + x_pad)
+    y_min, y_max = float(np.min(all_y) - y_pad), float(np.max(all_y) + y_pad)
+    z_min = float(min(0.0, np.min(all_z) - z_pad))
+    z_max = float(max(2.0, np.max(all_z) + z_pad))
+    
+    # Ensure minimum bounding volume so the box does not collapse if stationary
+    x_range = max(x_max - x_min, 1.5)
+    y_range = max(y_max - y_min, 2.0)
+    z_range = max(z_max - z_min, 2.0)
     aspect_ratio = [x_range, y_range, z_range]
 
-    # Create a 1x3 grid for the plots
     fig = plt.figure(figsize=(15, 5))
-    fig.suptitle(f"Ground-truth and Synthetic Motion | Severity Class: {severity}", fontsize=16, fontweight='bold')
+    fig.suptitle(f"Ground-truth and Synthetic Motion | Severity Class: {severity}", fontsize=15, fontweight='bold')
     
     ax_gt = fig.add_subplot(131, projection='3d')
     ax_prior = fig.add_subplot(132, projection='3d')
@@ -112,11 +48,11 @@ def render_three_way_gif(gt_seq, prior_seq, gen_seq, severity, output_path, fps=
 
     def setup_axis(ax, title):
         ax.view_init(elev=elev, azim=azim, roll=roll)
-        ax.set_xlim3d([min_x, max_x])
-        ax.set_ylim3d([min_y, max_y])
-        ax.set_zlim3d([min_z, max_z])
+        ax.set_xlim3d([x_min, x_max])
+        ax.set_ylim3d([y_min, y_max])
+        ax.set_zlim3d([z_min, z_max])
         ax.set_box_aspect(aspect_ratio)
-        ax.set_title(title, fontsize=12)
+        ax.set_title(title, fontsize=12, pad=10)
         ax.set_xticklabels([])
         ax.set_yticklabels([])
         ax.set_zticklabels([])
@@ -126,7 +62,6 @@ def render_three_way_gif(gt_seq, prior_seq, gen_seq, severity, output_path, fps=
         ax_prior.clear()
         ax_gen.clear()
         
-        # Build the dynamic title for the synthetic output
         if gen_severity is not None:
             gen_title = f"3. Synthetic Model Output\nGen Class: {gen_severity} | Frame: {frame}/{num_frames}"
         else:
@@ -142,16 +77,15 @@ def render_three_way_gif(gt_seq, prior_seq, gen_seq, severity, output_path, fps=
             (ax_gen, gen_seq, 'salmon')
         ]
 
-        # Draw all three sequences
+        # Draw sequences with correctly mapped spatial axes
         for ax, seq, color in axes_and_seqs:
             for joint_path in h36m_joint_paths:
-                x = [seq[frame, j, 0] for j in joint_path]
-                y = [seq[frame, j, 1] for j in joint_path]
-                z = [seq[frame, j, 2] for j in joint_path]
-                ax.plot(x, y, z, color=color, linewidth=2, marker='o', markersize=3)
+                xs = [seq[frame, j, 0] for j in joint_path]  # Lateral
+                ys = [seq[frame, j, 2] for j in joint_path]  # Forward Travel
+                zs = [seq[frame, j, 1] for j in joint_path]  # Height
+                ax.plot(xs, ys, zs, color=color, linewidth=2, marker='o', markersize=3)
 
     interval = int((1 / fps) * 1000)
-    
     ani = FuncAnimation(fig, update, frames=num_frames, interval=interval)
     
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -230,7 +164,7 @@ if __name__ == "__main__":
     
     out_gif = out_dir / "test_three_way_render.gif"
     print(f"\nRendering 3-Way test GIF...")
-    render_three_way_gif(seq_gt, seq_prior, seq_gen, severity, out_gif, fps=15, elev=55, azim=55, roll=135)
+    render_three_way_gif(seq_gt, seq_prior, seq_gen, severity, out_gif, fps=15, elev=35, azim=110, roll=0)
     print(f"Successfully saved 3-Way test GIF to: {out_gif}")
     
     # Cleanup

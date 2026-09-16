@@ -25,13 +25,13 @@ windowing:
   filter_z_travel: false        # Set to 'true' to filter stationary sequences from dataset
 
 training:
-  overfit_severity_class: 1    # Set to '-1' for standard training runs, or [0-3] to overfit
+  overfit_severity_class: 1     # Set to '-1' for standard training runs, or [0-3] to overfit
   overfit_seed: 42
 
-  prefix_noise_std: 0.05        # Used for AR exposure bias mitigation
+  prefix_noise_std: 0.0         # Used for AR exposure bias mitigation
   prior_noise_scale: 1.0        # Used for Brownian prior generation
 
-  epochs: 500
+  epochs: 200
   learning_rate: 0.001
   batch_size: 512
   shuffle: true
@@ -41,11 +41,11 @@ training:
 
   log_interval: 5
   val_interval: 10
-  wandb_val_interval: 50   
+  wandb_val_interval: 100   
   eval_batches: -1              # where '-1' means all batches in the validation set
   num_workers: 2
 
-  alpha_trans: 0.15             # Mixing weight [0, 1] balancing translation vs. pose
+  alpha_trans: 0.05             # Mixing weight [0, 1] balancing translation vs. pose
   alpha_label: 0.50             # Mixing weight [0, 1] balancing CTMC label vs. motion    
 
 sampling:

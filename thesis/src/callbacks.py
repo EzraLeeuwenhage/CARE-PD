@@ -118,7 +118,8 @@ class WandBEvaluationCallback(Callback):
                 "x_0": x_0,
                 "y_0": y_0
             }
-            print(f"  -> Locked Random Anchor (Seed: {seed}) for Severity Class {sev_val}")
+            print(f"  -> Locked Random Anchor (Seed {seed}) for Severity Class {sev_val}")
+            print(f"  ----> Key: {single_sequence['key']} - #Frames: {single_sequence['seq_len']}")
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if trainer.sanity_checking: return
@@ -215,10 +216,9 @@ class WandBEvaluationCallback(Callback):
         print(f"  [Time] Anchor GIF Rendering: {time.time() - gif_start:.2f}s")
 
         # Log all metrics and GIFs to W&B
-        if wandb.run is not None:
-            for p, sev_val in zip(gif_paths, self.anchors.keys()):
-                wandb_logs[f"eval_videos/anchor_class_{sev_val}"] = wandb.Video(str(p), format="gif")
-                 
-            trainer.logger.experiment.log(wandb_logs, step=trainer.global_step)
+        for p, _ in zip(gif_paths, self.anchors.keys()):
+            wandb_logs[f"eval_videos/{p.stem}"] = wandb.Video(str(p), format="gif")
+                
+        trainer.logger.experiment.log(wandb_logs, step=trainer.global_step)
 
         print(f"  [Time] TOTAL Validation Routine: {time.time() - val_start_time:.2f}s\n")
