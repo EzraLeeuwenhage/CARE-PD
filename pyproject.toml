@@ -29,6 +29,7 @@ dependencies = [
     "chumpy>=0.70",
     "google>=3.0.0",
     "lightning>=2.6.0",
+    "moviepy>=2.2.1",
 ]
 
 [tool.uv.extra-build-dependencies]

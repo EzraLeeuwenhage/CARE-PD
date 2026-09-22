@@ -404,48 +404,110 @@ class FullSequenceSMPLDataset(Dataset):
 
 
 class OverfitWrapper(Dataset):
-    """Wraps any dataset to artificially repeat a single randomly selected sequence of a specific class."""
+    """Dynamically locks training and evaluation to N chained windows of an arbitrary walk."""
+    _SHARED_LOCKED_KEY = None
+    _SHARED_MAX_FRAMES = None
+
     def __init__(self, dataset, cfg):
         super().__init__()
         self.dataset = dataset
         target_sev = cfg['training'].get('overfit_severity_class', 0)
-        
-        valid_indices = [i for i in range(len(dataset)) if dataset.get_severity(i) == target_sev]
-        if not valid_indices: 
-            raise ValueError(f"No valid sequences found for severity class {target_sev}")
-            
         seed = cfg['training'].get('overfit_seed', 42)
         rng = random.Random(seed)
-        self.single_idx = rng.choice(valid_indices)
-        self.dummy_epoch_size = cfg['training']['batch_size'] * 10
-        
-        if hasattr(dataset, 'window_indices'):
-            info = dataset.window_indices[self.single_idx]
-            print(f"\n[OVERFIT MODE] Locked to chunk -> {info[0]} (Start: {info[1]}) | Class: {target_sev} | Seed: {seed}")
+
+        req_max_len = cfg['windowing'].get('max_sequence_len', 200)
+        window_size = cfg['windowing']['total_window_size']
+        step_size = cfg['windowing']['step_size']
+        prefix_len = cfg['windowing']['prefix_length']
+
+        # 1. Deterministically lock key across train and eval
+        if OverfitWrapper._SHARED_LOCKED_KEY is None:
+            candidate_keys = [
+                k for k in dataset.pose_data.keys()
+                if dataset.key_to_severity.get(k.split('_down')[0], 0) == target_sev
+                and dataset.pose_data[k].shape[0] >= window_size
+            ]
+            candidate_keys.sort()
+            OverfitWrapper._SHARED_LOCKED_KEY = rng.choice(candidate_keys)
+
+        self.locked_key = OverfitWrapper._SHARED_LOCKED_KEY
+        raw_seq_len = dataset.pose_data[self.locked_key].shape[0]
+
+        # 2. Compute how many complete windows fit into the requested length
+        usable_len = min(raw_seq_len, req_max_len)
+        if usable_len < window_size:
+            n_windows = 1
+            max_trained_frames = window_size
         else:
-            info = dataset.valid_keys[self.single_idx]
-            print(f"\n[OVERFIT MODE] Locked to sequence -> {info} | Class: {target_sev} | Seed: {seed}")
+            # Number of complete windows that fit into usable_len
+            n_windows = (usable_len - window_size) // step_size + 1
+            max_trained_frames = prefix_len + n_windows * step_size
+
+        OverfitWrapper._SHARED_MAX_FRAMES = max_trained_frames
+
+        # 3. Route indices based on dataset type
+        if hasattr(dataset, 'window_indices') and isinstance(dataset, SMPLDataset):
+            # Training: extract all N sliding windows belonging to this key
+            self.valid_indices = [
+                i for i, item in enumerate(dataset.window_indices)
+                if item[0] == self.locked_key and (item[1] + window_size) <= max_trained_frames
+            ]
+            if not self.valid_indices:
+                fallback = [i for i, item in enumerate(dataset.window_indices) if item[0] == self.locked_key]
+                self.valid_indices = [fallback[0]] if fallback else [0]
+
+            print(f"\n[OVERFIT MODE] Train locked to sequence: '{self.locked_key}' ({raw_seq_len} raw frames)")
+            print(f"  -> Extracted {len(self.valid_indices)} chained window(s) (Coverage: [000 -> {max_trained_frames:03d}]):")
+            for v_idx in self.valid_indices:
+                w_start = dataset.window_indices[v_idx][1]
+                w_end = w_start + dataset.window_size
+                print(f"     * Window: frames [{w_start:03d} -> {w_end:03d}] (Length: {window_size})")
+
+        else:
+            # Eval / Test: lock to the exact span [0 -> max_trained_frames]
+            matching = [
+                i for i, item in enumerate(dataset.window_indices)
+                if item[0] == self.locked_key and item[1] == 0
+            ]
+            self.valid_indices = [matching[0]] if matching else [0]
+
+            print(f"\n[OVERFIT MODE] Eval locked to sequence: '{self.locked_key}'")
+            print(f"  -> Evaluation span locked to trained frames: [000 -> {max_trained_frames:03d}] ({n_windows} AR steps)")
+
+        self.dummy_epoch_size = cfg['training']['batch_size'] * 10
 
     def __len__(self):
         return self.dummy_epoch_size
 
     def __getitem__(self, idx):
-        return self.dataset[self.single_idx]
+        actual_idx = self.valid_indices[idx % len(self.valid_indices)]
+        sample = self.dataset[actual_idx]
+
+        # For eval/test sequences, slice strictly to the trained boundary
+        if OverfitWrapper._SHARED_MAX_FRAMES is not None and not isinstance(self.dataset, SMPLDataset):
+            max_f = OverfitWrapper._SHARED_MAX_FRAMES
+            if sample['pose'].shape[0] > max_f:
+                sample['pose'] = sample['pose'][:max_f]
+                sample['trans'] = sample['trans'][:max_f]
+                sample['cond_mask'] = sample['cond_mask'][:max_f]
+                sample['pad_mask'] = sample['pad_mask'][:max_f]
+                sample['seq_len'] = torch.tensor(max_f, dtype=torch.long)
+
+        return sample
 
 
 def get_dataloader(cfg, mode='train'):
-    """Builds appropriate dataloader and routes depending on generative paradigm.
-    """
     gen_mode = cfg['model'].get('generation_mode', 'ar_rollout')
     is_train = mode == 'train'
     is_overfit = cfg['training'].get('overfit_severity_class', -1) >= 0
     
-    # OS-SG uses full sequence padding for all splits.
-    # AR-WG needs windowed chunks for training, but full sequences for validation/testing
+    # In overfit mode, route all splits to 'train' so eval has access to the train sequence
+    dataset_mode = 'train' if is_overfit else mode
+    
     if gen_mode == 'one_shot' or not is_train:
-        dataset = FullSequenceSMPLDataset(cfg, mode=mode)
+        dataset = FullSequenceSMPLDataset(cfg, mode=dataset_mode)
     else:
-        dataset = SMPLDataset(cfg, mode=mode)
+        dataset = SMPLDataset(cfg, mode=dataset_mode)
         
     if is_overfit:
         dataset = OverfitWrapper(dataset, cfg)

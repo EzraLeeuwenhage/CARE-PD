@@ -36,12 +36,17 @@ if __name__ == "__main__":
     out_dir_path = Path(cfg['paths']['output_dir'])
     out_dir_path.mkdir(parents=True, exist_ok=True)
 
-    wandb_logger = WandbLogger(
+    local_wandb_dir = Path("/content/wandb_runtime")
+    local_wandb_dir.mkdir(parents=True, exist_ok=True)
+
+    run = wandb.init(
         project="thesis",
         name=model_name,
-        save_dir=str(out_dir_path),
-        config=cfg
+        dir=str(local_wandb_dir),
+        config=cfg,
+        reinit=True
     )
+    wandb_logger = WandbLogger(experiment=run)
 
     print(f"\nStarting model train-test pipeline for '{model_name}' (Joint Model: {is_joint_model})...")
 
@@ -56,7 +61,18 @@ if __name__ == "__main__":
         eval_loader = get_dataloader(cfg, mode='eval')
         test_loader = get_dataloader(cfg, mode='test')
 
-    model = model_class(cfg)
+    # optionally load model and trainer state from checkpoint
+    resume_ckpt = cfg['training'].get('resume_checkpoint', None)
+    resume_trainer_state = cfg['training'].get('resume_trainer_state', False)
+
+    if resume_ckpt:
+        ckpt_path = Path(resume_ckpt)
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"[Resume Error] Checkpoint file not found at: {ckpt_path.resolve()}")
+        print(f"\n[RESUME] Loading model weights from: {ckpt_path}\n")
+        model = model_class.load_from_checkpoint(str(ckpt_path), cfg=cfg)
+    else:
+        model = model_class(cfg)
     
     log_interval = cfg['training'].get('log_interval', 5)
     val_interval = cfg['training'].get('val_interval', 10)
@@ -70,7 +86,8 @@ if __name__ == "__main__":
         mode="min", 
         save_top_k=1,
         dirpath=str(out_dir_path / "checkpoints"),
-        filename=f"best-{{epoch:02d}}-{{val/mpjae_deg:.2f}}"
+        filename="best-{epoch:02d}-{val_mpjae_deg:.2f}",
+        auto_insert_metric_name=False
     )
 
     trainer = pl.Trainer(
@@ -78,7 +95,7 @@ if __name__ == "__main__":
         callbacks=[print_callback, checkpoint_callback, wandb_eval_callback],
         enable_progress_bar=False,
         max_epochs=cfg['training']['epochs'],
-        precision="16-mixed",
+        precision="32",
         accelerator="auto",
         devices=1,
         check_val_every_n_epoch=val_interval,
@@ -88,16 +105,21 @@ if __name__ == "__main__":
     trainer.validate(model, dataloaders=eval_loader, verbose=False)
 
     print("\n--- PHASE 1: TRAINING ---")
-    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=eval_loader)
+    fit_ckpt_path = str(resume_ckpt) if (resume_ckpt and resume_trainer_state) else None
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=eval_loader, ckpt_path=fit_ckpt_path)
 
     print("\n--- PHASE 2: DATASET GENERATION ---")
     best_model_path = checkpoint_callback.best_model_path
+    target_ckpt = best_model_path if (best_model_path and Path(best_model_path).exists()) else resume_ckpt
 
     if overfit_severity_class == -1:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        print(f"Loading best checkpoint from: {best_model_path}")
-        best_model = model_class.load_from_checkpoint(best_model_path, cfg=cfg).to(device)
+        if target_ckpt and Path(target_ckpt).exists():
+            print(f"Loading checkpoint from: {target_ckpt}")
+            best_model = model_class.load_from_checkpoint(str(target_ckpt), cfg=cfg).to(device)
+        else:
+            best_model = model.to(device)
         
         data_dict = generate_trajectories(
             model=best_model, dataloader=test_loader, num_steps=cfg['sampling']['num_steps'], 
@@ -124,13 +146,12 @@ if __name__ == "__main__":
         dist_metrics["test_metrics/Overall_MPJAE_deg"] = mpjae_rad * (180.0 / np.pi)
         dist_metrics["test_metrics/label_accuracy"] = test_label_acc
 
-        if wandb_logger.experiment is not None:
-            for img_path in vis_dir.glob("*.png"):
-                dist_metrics[f"test_visuals/{img_path.stem}"] = wandb.Image(str(img_path))
-            
-            wandb_logger.experiment.log(dist_metrics, step=trainer.global_step)
+        for img_path in vis_dir.glob("*.png"):
+            dist_metrics[f"test_visuals/{img_path.stem}"] = wandb.Image(str(img_path))
+        
+        run.log(dist_metrics, step=trainer.global_step)
     else: 
         print("[OVERFIT MODE] Skipping Test Generation and Evaluation.")
 
-    wandb_logger.experiment.finish()
+    run.finish()
     print("\nPipeline Finished Successfully!")
