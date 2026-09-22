@@ -57,16 +57,17 @@ def plot_smpl_mpjae(data, output_dir):
 
         fig, axes = plt.subplots(1, 2, figsize=(18, 6))
 
-        # Left Panel: Overall distributions across broad categories
+        # Left Panel: Overall distributions across broad categories (Boxplot)
         df_cat_overall = df_cat[df_cat["Severity Class"] == "Overall"]
-        sns.violinplot(
+        sns.boxplot(
             data=df_cat_overall, 
             x="Category", 
             y="MPJAE (deg)", 
             ax=axes[0], 
             order=categories,
-            inner="quartile", 
-            color="lightcoral"
+            color="lightcoral",
+            showfliers=False,
+            width=0.5
         )
         axes[0].set_title("6D Pose Reconstruction Error by Body Region (Overall Dataset)", fontsize=13, fontweight='bold')
         axes[0].set_ylabel("Angular Error (degrees)")
@@ -152,7 +153,7 @@ def plot_smpl_mpjae(data, output_dir):
 
 
 def plot_arm_swing_metrics(data, output_dir, distances_df=None):
-    """Plots violin distributions for Arm Swing Asymmetry with optional distance balloons."""
+    """Plots boxplot distributions for Arm Swing Asymmetry with optional distance balloons."""
     if isinstance(data, (str, Path)):
         with open(data, 'r') as f:
             data = json.load(f)
@@ -191,17 +192,17 @@ def plot_arm_swing_metrics(data, output_dir, distances_df=None):
     metric_name = "Swing Asymmetry (SI)"
     palette = {"Ground Truth": "lightsteelblue", "Generated": "lightcoral"}
 
-    sns.violinplot(
+    # Standardized boxplot to avoid artificial smoothing
+    sns.boxplot(
         data=df, 
         x="Severity Class", 
         y="Value", 
         hue="Source", 
-        split=False, 
-        inner="quartile",
         order=cls_order,
         ax=ax,
         palette=palette,
-        bw_adjust=0.2
+        showfliers=False,
+        width=0.5
     )
     
     ax.set_title(f"{metric_name} Distribution: Ground Truth vs Generated", fontsize=15, fontweight='bold')
@@ -211,11 +212,9 @@ def plot_arm_swing_metrics(data, output_dir, distances_df=None):
 
     # Plot textual distance balloons if distances_df is provided
     if distances_df is not None:
-        # Retrieve the auto-scaled Y limits that already include the KDE tails
         y_min_auto, y_max_auto = ax.get_ylim()
         y_range = max(y_max_auto - y_min_auto, 1e-5)
         
-        # Add padding to the top for the balloons, keeping the bottom KDE tail intact
         ax.set_ylim(y_min_auto, y_max_auto + (y_range * 0.20))
 
         x_ticks = [l.get_text() for l in ax.get_xticklabels()]
@@ -223,13 +222,11 @@ def plot_arm_swing_metrics(data, output_dir, distances_df=None):
             match = distances_df[(distances_df['Severity'] == label_text) & (distances_df['Metric'] == metric_name)]
             if not match.empty:
                 ks = match.iloc[0]['KS_Stat']
-                h = match.iloc[0]['Hellinger']
-                worst_score = max(ks, h)
+                w = match.iloc[0]['Wasserstein']
                 
-                # Anchor the balloon slightly above the original KDE tail
-                ax.text(x_idx, y_max_auto + (y_range * 0.05), f"K: {ks:.2f}\nH: {h:.2f}",
+                ax.text(x_idx, y_max_auto + (y_range * 0.05), f"K: {ks:.2f}\nW: {w:.2f}",
                         ha='center', va='bottom', fontsize=10, fontweight='bold',
-                        bbox=dict(facecolor=get_color(worst_score), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
+                        bbox=dict(facecolor=get_color(ks), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
 
     ax.legend(title="Data Source", fontsize=11, title_fontsize=12, loc="upper right")
 
@@ -282,12 +279,10 @@ def plot_sparc_metrics(data, output_dir, distances_df=None):
         df_knees = pd.DataFrame(knee_records)
         cls_order = sorted(df_knees["Severity Class"].unique())
         
-        # Create two fully independent subplots
         fig, axes = plt.subplots(1, 2, figsize=(15, 6))
         
         for idx, j_name in enumerate(knee_joints):
             ax = axes[idx]
-            # Isolate data for this specific joint
             df_joint = df_knees[df_knees["Joint"] == j_name]
             
             sns.boxplot(
@@ -320,11 +315,10 @@ def plot_sparc_metrics(data, output_dir, distances_df=None):
                     match = distances_df[(distances_df['Severity'] == label_text) & (distances_df['Metric'] == 'SPARC_Knees')]
                     if not match.empty:
                         ks = match.iloc[0]['KS_Stat']
-                        h = match.iloc[0]['Hellinger']
-                        worst_score = max(ks, h)
-                        ax.text(x_idx, y_max + (y_range * 0.05), f"K: {ks:.2f}\nH: {h:.2f}",
+                        w = match.iloc[0]['Wasserstein']
+                        ax.text(x_idx, y_max + (y_range * 0.05), f"K: {ks:.2f}\nW: {w:.2f}",
                                 ha='center', va='bottom', fontsize=10, fontweight='bold',
-                                bbox=dict(facecolor=get_color(worst_score), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
+                                bbox=dict(facecolor=get_color(ks), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
             
             if idx == 0:
                 ax.get_legend().remove()
@@ -362,19 +356,18 @@ def plot_sparc_metrics(data, output_dir, distances_df=None):
         df_cat = pd.DataFrame(cat_records)
         fig, axes = plt.subplots(1, 2, figsize=(18, 6))
 
-        # Left Panel
+        # Left Panel (Boxplot)
         df_cat_overall = df_cat[df_cat["Severity Class"] == "Overall"]
-        sns.violinplot(
+        sns.boxplot(
             data=df_cat_overall, 
             x="Category", 
             y="SPARC", 
             hue="Source",
-            split=False,
             ax=axes[0], 
             order=categories,
-            inner="quartile", 
             palette=palette,
-            cut=0
+            showfliers=False,
+            width=0.5
         )
         axes[0].set_title("SPARC Smoothness by Body Region (Overall Dataset)", fontsize=13, fontweight='bold')
         axes[0].set_ylabel("SPARC Value (Higher = Smoother)")
@@ -389,20 +382,18 @@ def plot_sparc_metrics(data, output_dir, distances_df=None):
 
             x_ticks = [l.get_text() for l in axes[0].get_xticklabels()]
             for x_idx, label_text in enumerate(x_ticks):
-                # Query the 'Overall' severity class since the left panel only plots overall data
                 match = distances_df[(distances_df['Severity'] == 'Overall') & (distances_df['Metric'] == f'SPARC_{label_text}')]
                 if not match.empty:
                     ks = match.iloc[0]['KS_Stat']
-                    h = match.iloc[0]['Hellinger']
-                    worst_score = max(ks, h)
+                    w = match.iloc[0]['Wasserstein']
                     
-                    axes[0].text(x_idx, y_max + (y_range * 0.15), f"K: {ks:.2f}\nH: {h:.2f}",
+                    axes[0].text(x_idx, y_max + (y_range * 0.15), f"K: {ks:.2f}\nW: {w:.2f}",
                             ha='center', va='bottom', fontsize=10, fontweight='bold',
-                            bbox=dict(facecolor=get_color(worst_score), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
+                            bbox=dict(facecolor=get_color(ks), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
 
         axes[0].legend(title="Data Source", loc="lower right")
 
-        # Right Panel: Primary Walking Joints across clinical severity classes
+        # Right Panel: Primary Walking Joints across clinical severity classes (Boxplot)
         target_joints = ['L_Hip', 'R_Hip', 'L_Knee', 'R_Knee', 'L_Ankle', 'R_Ankle']
         leg_records = []
         
@@ -418,17 +409,16 @@ def plot_sparc_metrics(data, output_dir, distances_df=None):
         df_legs = pd.DataFrame(leg_records)
         cls_order = sorted(df_legs["Severity Class"].unique())
         
-        sns.violinplot(
+        sns.boxplot(
             data=df_legs, 
             x="Severity Class", 
             y="SPARC", 
             hue="Source", 
-            split=False,
-            inner="quartile",
             ax=axes[1],
             order=cls_order, 
             palette=palette,
-            cut=0
+            showfliers=False,
+            width=0.5
         )
         axes[1].set_title("Primary Walking Joints (Hips/Knees/Ankles) Across Severity", fontsize=13, fontweight='bold')
         axes[1].set_ylabel("SPARC Value (Higher = Smoother)")
@@ -444,16 +434,14 @@ def plot_sparc_metrics(data, output_dir, distances_df=None):
 
             x_ticks = [l.get_text() for l in axes[1].get_xticklabels()]
             for x_idx, label_text in enumerate(x_ticks):
-                # We specifically labeled this as "SPARC_Lower_Limbs" in the pre-processing dataframe
                 match = distances_df[(distances_df['Severity'] == label_text) & (distances_df['Metric'] == 'SPARC_Lower_Limbs')]
                 if not match.empty:
                     ks = match.iloc[0]['KS_Stat']
-                    h = match.iloc[0]['Hellinger']
-                    worst_score = max(ks, h)
+                    w = match.iloc[0]['Wasserstein']
                     
-                    axes[1].text(x_idx, y_max + (y_range * 0.15), f"K: {ks:.2f}\nH: {h:.2f}",
+                    axes[1].text(x_idx, y_max + (y_range * 0.15), f"K: {ks:.2f}\nW: {w:.2f}",
                             ha='center', va='bottom', fontsize=10, fontweight='bold',
-                            bbox=dict(facecolor=get_color(worst_score), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
+                            bbox=dict(facecolor=get_color(ks), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
 
         axes[1].legend(title="Data Source", loc="lower right")
 
@@ -526,7 +514,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--hide_distances", action="store_true", 
-        help="Flag to disable the KS & Hellinger distance balloons in the plots."
+        help="Flag to disable the KS & Wasserstein distance balloons in the plots."
     )
     args = parser.parse_args()
 
@@ -540,7 +528,7 @@ if __name__ == "__main__":
         
         distances_df = None
         if not args.hide_distances:
-            print("Computing KS & Hellinger Distances for SMPL Metrics...")
+            print("Computing KS & Wasserstein Distances for SMPL Metrics...")
             with open(smpl_path, 'r') as f:
                 data_json = json.load(f)
             
@@ -553,7 +541,7 @@ if __name__ == "__main__":
                 # Map "Overall" to "overall" and "Class X" to "X" to match the H36M Comparator structure
                 c_key = "overall" if sev_key == "Overall" else sev_key.replace("Class ", "")
                 
-                # Arm Swing (Forced to np.array to prevent TypeError during NaN filtering)
+                # Arm Swing
                 gt_comp[c_key]["Left Arm ROM"] = np.array(np.degrees(metrics.get("GT_ROM_L", [])))
                 gen_comp[c_key]["Left Arm ROM"] = np.array(np.degrees(metrics.get("Gen_ROM_L", [])))
                 

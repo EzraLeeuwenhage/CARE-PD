@@ -107,7 +107,7 @@ def plot_dataset_summary_stats(df, output_dir, prefix="", dataset_label=""):
 # ---------------------------------------------------------
 def plot_pd_feature_violins(df, output_dir, prefix="", dataset_label=""):
     """
-    Plots violin distributions for specified clinical features.
+    Plots boxplot distributions for specified clinical features.
     Seaborn handles NaNs natively during plotting.
     """
     features = [
@@ -131,29 +131,17 @@ def plot_pd_feature_violins(df, output_dir, prefix="", dataset_label=""):
         ax = axes_flat[idx]
         key = feat_info["key"]
         
-        if key in ["mean_emos"]:
-            # Use box plot for eMoS features, hiding extreme outliers to prevent y-axis squashing
-            sns.boxplot(
-                data=df, 
-                x="Class_Label", 
-                y=key, 
-                ax=ax, 
-                order=labels,
-                palette="muted", 
-                showfliers=False,
-                width=0.5
-            )
-        else:
-            # Use violin plot for other features
-            sns.violinplot(
-                data=df, 
-                x="Class_Label", 
-                y=key, 
-                ax=ax, 
-                order=labels,
-                palette="muted", 
-                inner="quartile"
-            )
+        # Standardized boxplots across all features to prevent misleading density smearing
+        sns.boxplot(
+            data=df, 
+            x="Class_Label", 
+            y=key, 
+            ax=ax, 
+            order=labels,
+            palette="muted", 
+            showfliers=False,
+            width=0.5
+        )
 
         ax.set_title(feat_info["title"], fontsize=12, fontweight='bold', pad=10)
         ax.set_ylabel(feat_info["ylabel"])
@@ -171,7 +159,7 @@ def plot_pd_feature_violins(df, output_dir, prefix="", dataset_label=""):
 def prepare_combined_dataframe(gt_data, gen_data):
     """
     Merges ground-truth and generated data dicts into one dataframe.
-    Adds 'Source' column for Seaborn violins/boxplots plotting.
+    Adds 'Source' column for Seaborn boxplots plotting.
     """
     records = []
     keys = ["overall"] + sorted([k for k in gt_data.keys() if k != "overall"])
@@ -205,7 +193,7 @@ def prepare_combined_dataframe(gt_data, gen_data):
 def plot_pd_feature_comparison_plots(df, distances_df, output_dir):
     """
     Plots individual paired distributions for GT vs Gen data.
-    Adds text with the KS and Hellinger distances.
+    Adds text with the KS and Wasserstein distances.
     """
     features = [
         {"key": "mean_step_length", "title": "Mean Step Length", "ylabel": "Length (m)"},
@@ -233,7 +221,8 @@ def plot_pd_feature_comparison_plots(df, distances_df, output_dir):
         sns.boxplot(
             data=df, x="Class_Label", y=key, hue="Source", 
             ax=ax, order=labels,
-            palette={"Ground Truth": "cornflowerblue", "Generated": "salmon"}
+            palette={"Ground Truth": "cornflowerblue", "Generated": "salmon"},
+            showfliers=False
         )
 
         ax.set_title(f"{feat_info['title']} (GT vs. Generated)", fontsize=14, fontweight='bold', pad=30)
@@ -257,13 +246,12 @@ def plot_pd_feature_comparison_plots(df, distances_df, output_dir):
             match = distances_df[(distances_df['Severity'] == sev_name) & (distances_df['Metric'] == key)]
             if not match.empty:
                 ks = match.iloc[0]['KS_Stat']
-                h = match.iloc[0]['Hellinger']
-                worst_score = max(ks, h)
+                w = match.iloc[0]['Wasserstein']
                 
                 # Move text higher up: y_max + (y_range * 0.15)
-                ax.text(x_idx, y_max + (y_range * 0.15), f"K: {ks:.2f}\nH: {h:.2f}",
+                ax.text(x_idx, y_max + (y_range * 0.15), f"K: {ks:.2f}\nW: {w:.2f}",
                         ha='center', va='bottom', fontsize=10, fontweight='bold',
-                        bbox=dict(facecolor=get_color(worst_score), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
+                        bbox=dict(facecolor=get_color(ks), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
 
         ax.legend(
             title="Data Source", 

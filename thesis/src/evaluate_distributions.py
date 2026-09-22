@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
-from scipy.stats import ks_2samp, gaussian_kde
+from scipy.stats import ks_2samp, wasserstein_distance
 import seaborn as sns
 from matplotlib.colors import ListedColormap, BoundaryNorm
 
@@ -18,50 +18,15 @@ class DistributionComparator:
         """
         self.metrics = metrics_to_compare
 
-    def _get_kde_data(self, p_samples, q_samples, grid_points=1000):
-        """Helper method to isolate the KDE grid computation for both metrics and plotting."""
+    def compute_wasserstein(self, p_samples, q_samples):
+        """Computes the 1-Wasserstein distance."""
         p_samples = p_samples[~np.isnan(p_samples)]
         q_samples = q_samples[~np.isnan(q_samples)]
 
-        if len(p_samples) < 2 or len(q_samples) < 2:
-            return None, None, None, None, None, None
-
-        # Prevent error if generated data has zero variance
-        if np.var(p_samples) == 0:
-            p_samples = p_samples + np.random.normal(0, 1e-6, len(p_samples))
-        if np.var(q_samples) == 0:
-            q_samples = q_samples + np.random.normal(0, 1e-6, len(q_samples))
-
-        # Define the grid over which to integrate using both distributions
-        min_val = min(np.min(p_samples), np.min(q_samples))
-        max_val = max(np.max(p_samples), np.max(q_samples))
-        
-        if min_val == max_val:
-            return None, None, None, None, None, None
-
-        # Expand grid slightly beyond min/max to capture tails
-        margin = 0.1 * abs(max_val - min_val)
-        grid = np.linspace(min_val - margin, max_val + margin, grid_points)
-
-        # Fit PDFs
-        kde_p = gaussian_kde(p_samples)
-        kde_q = gaussian_kde(q_samples)
-
-        pdf_p = kde_p(grid)
-        pdf_q = kde_q(grid)
-        dx = grid[1] - grid[0]
-
-        return grid, pdf_p, pdf_q, dx, p_samples, q_samples
-
-    def compute_hellinger(self, p_samples, q_samples, grid_points=1000):
-        """Computes the squared Hellinger distance using Gaussian KDE approximation."""
-        res = self._get_kde_data(p_samples, q_samples, grid_points)
-        if res[0] is None:
+        if len(p_samples) == 0 or len(q_samples) == 0:
             return np.nan
-        
-        grid, pdf_p, pdf_q, dx, _, _ = res
-        hellinger_sq = 0.5 * np.sum((np.sqrt(pdf_p) - np.sqrt(pdf_q))**2) * dx
-        return np.sqrt(np.clip(hellinger_sq, 0.0, 1.0))
+
+        return float(wasserstein_distance(p_samples, q_samples))
 
     def compute_ks(self, p_samples, q_samples):
         """Computes the Kolmogorov-Smirnov statistic."""
@@ -92,7 +57,7 @@ class DistributionComparator:
 
                 results[sev][metric] = {
                     "KS_Stat": self.compute_ks(gt_samples, gen_samples),
-                    "Hellinger": self.compute_hellinger(gt_samples, gen_samples)
+                    "Wasserstein": self.compute_wasserstein(gt_samples, gen_samples)
                 }
                 
         return results
@@ -109,39 +74,39 @@ class DistributionComparator:
                     "Severity": "Overall" if sev == "overall" else f"Class {sev}",
                     "Metric": metric,
                     "KS_Stat": distances["KS_Stat"],
-                    "Hellinger": distances["Hellinger"]
+                    "Wasserstein": distances["Wasserstein"]
                 })
         return pd.DataFrame(rows)
         
     def plot_distance_heatmaps(self, results, save_dir=None):
-        """Renders a dual heatmap for KS and Hellinger distances using semantic coloring."""
+        """Renders a dual heatmap for KS and Wasserstein distances using semantic coloring."""
         # Prepare data for heatmap visuals
         results = self._format_results_to_dataframe(results) if isinstance(results, dict) else results
         ks_pivot = results.pivot(index='Metric', columns='Severity', values='KS_Stat')
-        h_pivot = results.pivot(index='Metric', columns='Severity', values='Hellinger')
+        w_pivot = results.pivot(index='Metric', columns='Severity', values='Wasserstein')
 
         # Sort columns on severity class
         cols = ["Overall"] + [f"Class {i}" for i in range(4) if f"Class {i}" in ks_pivot.columns]
         ks_pivot = ks_pivot[cols]
-        h_pivot = h_pivot[cols]
+        w_pivot = w_pivot[cols]
 
-        # Define colormap for easy overview
+        # Define colormap for KS overview
         colors = ['#85e085', '#ffe680', '#ffb366', '#ff6666'] 
-        cmap = ListedColormap(colors)
-        bounds = [0.0, 0.10, 0.20, 0.40, 1.0]
-        norm = BoundaryNorm(bounds, cmap.N)
+        cmap_ks = ListedColormap(colors)
+        bounds_ks = [0.0, 0.10, 0.20, 0.40, 1.0]
+        norm_ks = BoundaryNorm(bounds_ks, cmap_ks.N)
 
         fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
-        sns.heatmap(ks_pivot, annot=True, fmt=".2f", cmap=cmap, norm=norm, ax=axes[0], 
+        sns.heatmap(ks_pivot, annot=True, fmt=".2f", cmap=cmap_ks, norm=norm_ks, ax=axes[0], 
                     cbar=False, linewidths=1, linecolor='white')
         axes[0].set_title("Kolmogorov-Smirnov (KS) Statistic", fontsize=14, fontweight='bold')
         axes[0].set_ylabel("")
         axes[0].set_xlabel("")
 
-        sns.heatmap(h_pivot, annot=True, fmt=".2f", cmap=cmap, norm=norm, ax=axes[1], 
-                    cbar_kws={'label': 'Distance'}, linewidths=1, linecolor='white')
-        axes[1].set_title("Hellinger Distance", fontsize=14, fontweight='bold')
+        sns.heatmap(w_pivot, annot=True, fmt=".2f", cmap="YlOrRd", ax=axes[1], 
+                    cbar_kws={'label': '1-Wasserstein Distance'}, linewidths=1, linecolor='white')
+        axes[1].set_title("1-Wasserstein Distance (Physical Feature Units)", fontsize=14, fontweight='bold')
         axes[1].set_ylabel("")
         axes[1].set_xlabel("")
 
@@ -208,72 +173,41 @@ class DistributionComparator:
             plt.show()
         plt.close()
 
-    def plot_hellinger_kde(self, p_samples, q_samples, metric_name, sev_class, save_dir=None):
-        """Visualizes the KDE approximation, intersection area, and the underlying rug plot."""
-        res = self._get_kde_data(p_samples, q_samples)
-        if res[0] is None: return
-        grid, pdf_p, pdf_q, dx, p_clean, q_clean = res
-        
-        hellinger_sq = 0.5 * np.sum((np.sqrt(pdf_p) - np.sqrt(pdf_q))**2) * dx
-        hellinger = np.sqrt(np.clip(hellinger_sq, 0.0, 1.0))
-        
-        plt.figure(figsize=(8, 5))
-        
-        # Plot continuous PDFs
-        plt.plot(grid, pdf_p, color='cornflowerblue', label='GT Density (KDE)', linewidth=2)
-        plt.plot(grid, pdf_q, color='salmon', label='Gen Density (KDE)', linewidth=2)
-        
-        # Shade overlap area
-        overlap = np.minimum(pdf_p, pdf_q)
-        plt.fill_between(grid, overlap, color='mediumaquamarine', alpha=0.4, 
-                         label=f'Density Overlap (Hell_Dist={hellinger:.4f})')
-        
-        # Add discrete rug plots slightly below x-axis
-        y_min = max(np.max(pdf_p), np.max(pdf_q))
-        plt.plot(p_clean, np.full_like(p_clean, -0.02 * y_min), '|', color='cornflowerblue', alpha=0.3, label="GT Samples")
-        plt.plot(q_clean, np.full_like(q_clean, -0.04 * y_min), '|', color='salmon', alpha=0.3, label="Gen Samples")
-        
-        plt.title(f'KDE Smearing & PDF Overlap: {metric_name}\nClass: {sev_class}', fontweight='bold')
-        plt.xlabel(metric_name)
-        plt.ylabel('Probability Density')
-        plt.legend(loc="upper right")
-        plt.grid(alpha=0.3)
-        plt.tight_layout()
-        
-        if save_dir:
-            out_path = Path(save_dir) / "Hellinger_KDE"
-            out_path.mkdir(parents=True, exist_ok=True)
-            plt.savefig(out_path / f"hellinger_kde_{metric_name}_cls_{sev_class}.png", dpi=300)
-        else:
-            plt.show()
-        plt.close()
+    def plot_wasserstein_transport(self, p_samples, q_samples, metric_name, sev_class, save_dir=None):
+        """Visualizes the 1-Wasserstein distance as the integrated area between empirical CDFs."""
+        p_samples = p_samples[~np.isnan(p_samples)]
+        q_samples = q_samples[~np.isnan(q_samples)]
 
-    def plot_hellinger_penalty(self, p_samples, q_samples, metric_name, sev_class, save_dir=None):
-        """Visualizes the exact penalty integrand curve that determines the Hellinger distance."""
-        res = self._get_kde_data(p_samples, q_samples)
-        if res[0] is None: return
-        grid, pdf_p, pdf_q, dx, _, _ = res
-        
-        penalty = (np.sqrt(pdf_p) - np.sqrt(pdf_q))**2
-        # area = 0.5 * np.sum(penalty) * dx
-        # hellinger = np.sqrt(np.clip(area, 0.0, 1.0))
-        
+        if len(p_samples) == 0 or len(q_samples) == 0:
+            return
+
+        x_p = np.sort(p_samples)
+        x_q = np.sort(q_samples)
+
+        x_all = np.sort(np.unique(np.concatenate([x_p, x_q])))
+        cdf_p = np.searchsorted(x_p, x_all, side='right') / len(x_p)
+        cdf_q = np.searchsorted(x_q, x_all, side='right') / len(x_q)
+
+        w_dist = float(wasserstein_distance(p_samples, q_samples))
+
         plt.figure(figsize=(8, 5))
-        plt.plot(grid, penalty, color='crimson', label=f'Penalty Curve', linewidth=2)
-        plt.fill_between(grid, penalty, color='crimson', alpha=0.3, 
-                         label=f'Integration Area ~ Hell_Dist²')
-        
-        plt.title(f'Hellinger Penalty Integrand: {metric_name}\nClass: {sev_class}', fontweight='bold')
+        plt.step(x_all, cdf_p, label='Ground Truth (GT)', where='post', color='cornflowerblue', linewidth=2)
+        plt.step(x_all, cdf_q, label='Generated (Gen)', where='post', color='salmon', linewidth=2)
+
+        plt.fill_between(x_all, cdf_p, cdf_q, step='post', color='mediumaquamarine', alpha=0.4,
+                         label=f'Transport Work Area (W1={w_dist:.4f})')
+
+        plt.title(f'1-Wasserstein Optimal Transport Area: {metric_name}\nClass: {sev_class}', fontweight='bold')
         plt.xlabel(metric_name)
-        plt.ylabel('Penalty: (√P - √Q)²')
-        plt.legend(loc="upper right")
+        plt.ylabel('Cumulative Probability')
+        plt.legend(loc="lower right")
         plt.grid(alpha=0.3)
         plt.tight_layout()
-        
+
         if save_dir:
-            out_path = Path(save_dir) / "Hellinger_Penalty"
+            out_path = Path(save_dir) / "Wasserstein_Transport"
             out_path.mkdir(parents=True, exist_ok=True)
-            plt.savefig(out_path / f"hellinger_penalty_{metric_name}_cls_{sev_class}.png", dpi=300)
+            plt.savefig(out_path / f"wasserstein_{metric_name}_cls_{sev_class}.png", dpi=300)
         else:
             plt.show()
         plt.close()
@@ -329,7 +263,6 @@ if __name__ == "__main__":
                 gen_samples = gen_data[severity][metric]
 
                 comparator.plot_ks_ecdf(gt_samples, gen_samples, metric, severity, save_dir)
-                comparator.plot_hellinger_kde(gt_samples, gen_samples, metric, severity, save_dir)
-                comparator.plot_hellinger_penalty(gt_samples, gen_samples, metric, severity, save_dir)
+                comparator.plot_wasserstein_transport(gt_samples, gen_samples, metric, severity, save_dir)
                 
         print(f"Saved diagnostic plots to: {save_dir}")
