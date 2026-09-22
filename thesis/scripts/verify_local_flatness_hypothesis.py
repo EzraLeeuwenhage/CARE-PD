@@ -106,7 +106,7 @@ def verify_dataset_local_flatness():
         }
         
         # Generate the deterministic stationary prior (x_0)
-        x_0 = generate_x0(x_1, prefix_len, s_scale=1.0)
+        x_0 = generate_x0(x_1, prefix_len, prior_noise_scale=1.0)
 
         # Isolate target frames only (frames 15 to 60)
         targ_x1 = x_1['pose'][:, prefix_len:]

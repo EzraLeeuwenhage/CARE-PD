@@ -2,7 +2,7 @@ import numpy as np
 import joblib
 import torch
 from pathlib import Path
-from thesis.src.utils.geometry_utils import convert_6d_to_smpl
+from thesis.src.utils.geometry_utils import convert_6d_to_3d_axis_angle_smpl
 
 def save_smpl_pkl(generated_pose, generated_trans, output_filepath, subject_id="GEN", walk_prefix="gen_walk"):
     """
@@ -22,7 +22,7 @@ def save_smpl_pkl(generated_pose, generated_trans, output_filepath, subject_id="
     
     if dim == 6:
         # Convert 6D continuous rotations back to 3D axis-angle
-        generated_pose = convert_6d_to_smpl(generated_pose)
+        generated_pose = convert_6d_to_3d_axis_angle_smpl(generated_pose)
     elif dim == 3:
         if torch.is_tensor(generated_pose):
             generated_pose = generated_pose.detach().cpu().numpy()

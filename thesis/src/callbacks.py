@@ -36,7 +36,10 @@ class EpochAndValPrintCallback(Callback):
         if epoch % self.train_interval == 0:
             loss = trainer.callback_metrics.get("train/loss_total")
             loss_val = f"{loss.item():.4f}" if loss is not None else "N/A"
-            print(f"Epoch {epoch:03d} | Train Loss: {loss_val}")
+            
+            # Fetch current learning rate from optimizer
+            current_lr = trainer.optimizers[0].param_groups[0]['lr']
+            print(f"Epoch {epoch:03d} | Train Loss: {loss_val} | LR: {current_lr:.2e}")
 
     def on_validation_epoch_end(self, trainer, pl_module):
         epoch = trainer.current_epoch + 1
@@ -105,10 +108,13 @@ class WandBEvaluationCallback(Callback):
             seed = random.randint(0, 1024)
             gen = torch.Generator(device=pl_module.device).manual_seed(seed)
             
-            # Pre-compute x_0 for one-shot, keep None for AR rollout (will be generated per window)
+            # Pre-compute x_0 for one-shot, keep None for AR rollout (will be regenerated per window)
             x_0 = None
             if self.gen_mode == 'one_shot':
-                x_0 = generate_x0(single_sequence, pl_module.prefix_len, pl_module.prior_noise_scale, generator=gen)
+                x_0 = generate_x0(
+                    single_sequence, pl_module.prefix_len, pl_module.prior_noise_scale, 
+                    generator=gen, use_cumsum=getattr(pl_module, 'use_cumsum_prior', False)
+                )
                 
             y_0 = generate_label_prior(1, self.cfg['model'].get('num_classes', 4), pl_module.device, generator=gen)
 
@@ -134,9 +140,6 @@ class WandBEvaluationCallback(Callback):
         
         if not self.anchors:
             self._sample_anchors(trainer, pl_module)
-
-        for old_file in self.vis_dir.glob("*"):
-            old_file.unlink()
         
         display_epoch = 0 if is_baseline else epoch
         print(f"\n--- [W&B Callback] Running Validation (Epoch {display_epoch}) ---")
@@ -154,9 +157,13 @@ class WandBEvaluationCallback(Callback):
 
         is_overfit = self.cfg['training'].get('overfit_severity_class', -1) >= 0
 
-        # Compute MPJAE
-        flat_gt_pose = torch.cat(data_dict["gt"]["pose"], dim=1)
-        flat_gen_pose = torch.cat(data_dict["gen"]["pose"], dim=1)
+        # Compute MPJAE on generated target frames only
+        prefix_len = self.cfg['windowing']['prefix_length']
+        target_gt_pose = [p[:, prefix_len:] for p in data_dict["gt"]["pose"]]
+        target_gen_pose = [p[:, prefix_len:] for p in data_dict["gen"]["pose"]]
+
+        flat_gt_pose = torch.cat(target_gt_pose, dim=1)
+        flat_gen_pose = torch.cat(target_gen_pose, dim=1)
         
         mpjae_rad = self.smpl_evaluator.compute_mpjae(flat_gt_pose, flat_gen_pose)
         mpjae_deg = mpjae_rad * (180.0 / np.pi)
@@ -165,6 +172,20 @@ class WandBEvaluationCallback(Callback):
             "epoch": display_epoch,
             "eval_metrics/Overall_MPJAE_deg": mpjae_deg
         }
+
+        if self.gen_mode == 'ar_rollout':
+            step_size = self.cfg['windowing'].get('step_size', 45)
+            w0_gt = torch.cat([p[:, prefix_len:prefix_len + step_size] for p in data_dict["gt"]["pose"] if p.shape[1] >= prefix_len + step_size], dim=1)
+            w0_gen = torch.cat([p[:, prefix_len:prefix_len + step_size] for p in data_dict["gen"]["pose"] if p.shape[1] >= prefix_len + step_size], dim=1)
+            w1_gt_list = [p[:, prefix_len + step_size:prefix_len + 2 * step_size] for p in data_dict["gt"]["pose"] if p.shape[1] >= prefix_len + 2 * step_size]
+            w1_gen_list = [p[:, prefix_len + step_size:prefix_len + 2 * step_size] for p in data_dict["gen"]["pose"] if p.shape[1] >= prefix_len + 2 * step_size]
+
+            if w0_gt.shape[1] > 0 and len(w1_gt_list) > 0:
+                w0_err = self.smpl_evaluator.compute_mpjae(w0_gt, w0_gen) * (180.0 / np.pi)
+                w1_err = self.smpl_evaluator.compute_mpjae(torch.cat(w1_gt_list, dim=1), torch.cat(w1_gen_list, dim=1)) * (180.0 / np.pi)
+                wandb_logs["eval_metrics/MPJAE_win0_deg"] = w0_err
+                wandb_logs["eval_metrics/MPJAE_win1_deg"] = w1_err
+                wandb_logs["eval_metrics/AR_Drift_Ratio"] = w1_err / (w0_err + 1e-6)
 
         # Evaluate distributions
         if not is_overfit:
@@ -215,10 +236,13 @@ class WandBEvaluationCallback(Callback):
 
         print(f"  [Time] Anchor GIF Rendering: {time.time() - gif_start:.2f}s")
 
-        # Log all metrics and GIFs to W&B
-        for p, _ in zip(gif_paths, self.anchors.keys()):
-            wandb_logs[f"eval_videos/{p.stem}"] = wandb.Video(str(p), format="gif")
-                
+        # Log visualizations to W&B 
+        for p, sev in zip(gif_paths, self.anchors.keys()):
+            wandb_logs[f"eval_videos/anchor_class_{sev}"] = wandb.Image(
+                str(p.resolve()),
+                caption=f"Severity Class {sev} (Epoch {display_epoch})"
+            )
+
         trainer.logger.experiment.log(wandb_logs, step=trainer.global_step)
 
         print(f"  [Time] TOTAL Validation Routine: {time.time() - val_start_time:.2f}s\n")

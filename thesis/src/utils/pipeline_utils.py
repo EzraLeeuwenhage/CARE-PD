@@ -13,7 +13,7 @@ from thesis.src.evaluate_h36m import H36MEvaluator
 from thesis.src.evaluate_smpl import SMPLEvaluator
 from thesis.src.evaluate_distributions import DistributionComparator
 from thesis.src.generate_prior import generate_motion_prior_from_prefix
-from thesis.src.utils.geometry_utils import forward_to_h36m
+from thesis.src.utils.geometry_utils import batched_forward_to_h36m
 
 from thesis.src.utils.rendering.render_h36m_gif import render_three_way_gif
 from thesis.src.utils.visualize_metrics.visualize_h36m_metric_dist import (
@@ -122,9 +122,11 @@ def render_anchor_gifs(anchors, pl_module, is_joint_model, vis_dir, smpl_model, 
                 window_prefix_trans = gen_full_trans[curr_idx - pl_module.prefix_len : curr_idx].unsqueeze(0)
                 target_frames = min(pl_module.AR_window_size - pl_module.prefix_len, l - curr_idx)
                 
+                use_cumsum = getattr(pl_module, 'use_cumsum_prior', False)
                 prior_dict = generate_motion_prior_from_prefix(
                     window_prefix_pose, window_prefix_trans, target_frames, 
-                    s_scale=pl_module.prior_noise_scale, generator=prior_gen
+                    prior_noise_scale=pl_module.prior_noise_scale, generator=prior_gen,
+                    use_cumsum=use_cumsum
                 )
                 
                 prior_pose = torch.cat([prior_pose, prior_dict['pose']], dim=1)
@@ -134,9 +136,12 @@ def render_anchor_gifs(anchors, pl_module, is_joint_model, vis_dir, smpl_model, 
             prior_full_pose = prior_pose[0]
             prior_full_trans = prior_trans[0]
         
-        seq_gt = forward_to_h36m(gt_full_pose, gt_full_trans, smpl_model, h36m_regressor, pl_module.device)
-        seq_prior = forward_to_h36m(prior_full_pose, prior_full_trans, smpl_model, h36m_regressor, pl_module.device)
-        seq_gen = forward_to_h36m(gen_full_pose, gen_full_trans, smpl_model, h36m_regressor, pl_module.device)
+        triplet_h36m = batched_forward_to_h36m(
+            [gt_full_pose, prior_full_pose, gen_full_pose],
+            [gt_full_trans, prior_full_trans, gen_full_trans],
+            smpl_model, h36m_regressor, pl_module.device
+        )
+        seq_gt, seq_prior, seq_gen = triplet_h36m[0], triplet_h36m[1], triplet_h36m[2]
         
         gif_path = vis_dir / f"anchor_class_{sev_val}_epoch_{display_epoch}.gif"
         render_three_way_gif(seq_gt, seq_prior, seq_gen, sev_val, gif_path, gen_severity=gen_sev_val)
@@ -163,14 +168,12 @@ def format_and_convert(data_dict, cfg, is_joint_model=False, save_to_disk=False)
     smpl_model = SMPL(model_path='thesis/data/care_pd_preprocessing/SMPL_NEUTRAL.pkl', num_betas=10).eval().to(device)
     h36m_regressor = torch.tensor(np.load('thesis/data/care_pd_preprocessing/J_regressor_h36m_correct.npy'), dtype=torch.float32).to(device)
 
-    gt_h36m_all = [
-        forward_to_h36m(pose_seq[0], trans_seq[0], smpl_model, h36m_regressor, device)
-        for pose_seq, trans_seq in zip(data_dict["gt"]["pose"], data_dict["gt"]["trans"])
-    ]
-    gen_h36m_all = [
-        forward_to_h36m(pose_seq[0], trans_seq[0], smpl_model, h36m_regressor, device)
-        for pose_seq, trans_seq in zip(data_dict["gen"]["pose"], data_dict["gen"]["trans"])
-    ]
+    gt_h36m_all = batched_forward_to_h36m(
+        data_dict["gt"]["pose"], data_dict["gt"]["trans"], smpl_model, h36m_regressor, device
+    )
+    gen_h36m_all = batched_forward_to_h36m(
+        data_dict["gen"]["pose"], data_dict["gen"]["trans"], smpl_model, h36m_regressor, device
+    )
 
     for i, gt_sev in enumerate(data_dict["severities"]):
         seq_key = f"seq_{i:03d}"
