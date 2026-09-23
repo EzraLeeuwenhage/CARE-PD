@@ -28,6 +28,18 @@ class DistributionComparator:
 
         return float(wasserstein_distance(p_samples, q_samples))
 
+    def compute_standardized_wasserstein(self, p_samples, q_samples):
+        """Computes 1-Wasserstein normalized by ground-truth standard deviation (z-score distance)."""
+        p_clean = p_samples[~np.isnan(p_samples)]
+        q_clean = q_samples[~np.isnan(q_samples)]
+
+        if len(p_clean) == 0 or len(q_clean) == 0:
+            return np.nan
+
+        w_dist = float(wasserstein_distance(p_clean, q_clean))
+        std_gt = float(np.std(p_clean))
+        return w_dist / (std_gt + 1e-6) if std_gt > 1e-6 else 0.0
+
     def compute_ks(self, p_samples, q_samples):
         """Computes the Kolmogorov-Smirnov statistic."""
         p_samples = p_samples[~np.isnan(p_samples)]
@@ -57,7 +69,8 @@ class DistributionComparator:
 
                 results[sev][metric] = {
                     "KS_Stat": self.compute_ks(gt_samples, gen_samples),
-                    "Wasserstein": self.compute_wasserstein(gt_samples, gen_samples)
+                    "Wasserstein": self.compute_wasserstein(gt_samples, gen_samples),
+                    "Norm_Wasserstein": self.compute_standardized_wasserstein(gt_samples, gen_samples)
                 }
                 
         return results
@@ -74,7 +87,8 @@ class DistributionComparator:
                     "Severity": "Overall" if sev == "overall" else f"Class {sev}",
                     "Metric": metric,
                     "KS_Stat": distances["KS_Stat"],
-                    "Wasserstein": distances["Wasserstein"]
+                    "Wasserstein": distances["Wasserstein"],
+                    "Norm_Wasserstein": distances["Norm_Wasserstein"]
                 })
         return pd.DataFrame(rows)
         
