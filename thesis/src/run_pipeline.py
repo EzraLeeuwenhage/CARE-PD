@@ -44,7 +44,7 @@ if __name__ == "__main__":
         name=model_name,
         dir=str(local_wandb_dir),
         config=cfg,
-        reinit=True
+        # reinit=True
     )
     wandb_logger = WandbLogger(experiment=run)
 

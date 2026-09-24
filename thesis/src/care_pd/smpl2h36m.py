@@ -49,7 +49,28 @@ def main_world_only(cfg):
     h36m_regressor = torch.tensor(np.load(cfg.H36M_J_REG), dtype=torch.float32).to(_DEVICE)
     smpl_model = SMPL(model_path=cfg.MODEL_PATH, num_betas=10).to(_DEVICE)
     
-    all_smpls = joblib.load(cfg.DATA_DIR)
+    if str(cfg.DATA_DIR).endswith('.npz'):
+        npz_data = np.load(cfg.DATA_DIR, allow_pickle=True)
+        raw_dict = npz_data['arr_0'].item() if 'arr_0' in npz_data.files else {k: npz_data[k] for k in npz_data.files}
+        all_smpls = {}
+        for k, v in raw_dict.items():
+            if k.endswith('_trans') or k.endswith('_frame_ids'):
+                continue
+            trans = raw_dict.get(f"{k}_trans", None)
+            pose = v.reshape(v.shape[0], -1) if v.ndim == 3 else v
+            T = pose.shape[0]
+            sub_id, walk_id = k.split('__', 1) if '__' in k else ('all', k)
+            if sub_id not in all_smpls:
+                all_smpls[sub_id] = {}
+            all_smpls[sub_id][walk_id] = {
+                'pose': pose,
+                'trans': trans,
+                'transl': trans,
+                'beta': np.zeros((T, 10), dtype=np.float32)
+            }
+    else:
+        all_smpls = joblib.load(cfg.DATA_DIR)
+
     result_world = dict()
     
     for subject_id in tqdm(all_smpls, desc=f"Converting {base_name} to 3D World Coords"):
@@ -61,7 +82,9 @@ def main_world_only(cfg):
             down_sample_rate = max(1, int(cfg.fps / cfg.exfps))
             
             for down in range(down_sample_rate):
-                walk_name = f"{subject_id}__{walk_id}" if down_sample_rate == 1 else f"{subject_id}__{walk_id}_down{down}"
+                base_walk_name = f"{subject_id}__{walk_id}" if subject_id != 'all' else walk_id
+                walk_name = base_walk_name if down_sample_rate == 1 else f"{base_walk_name}_down{down}"
+
                 if smpl_data['pose'].shape[0] < 30:
                     print(f"Discarding {walk_name} because it is less than 30 frames {smpl_data['pose'].shape[0]}")
                     continue
