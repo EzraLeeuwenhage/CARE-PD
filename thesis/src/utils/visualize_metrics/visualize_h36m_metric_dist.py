@@ -97,7 +97,7 @@ def plot_dataset_summary_stats(df, output_dir, prefix="", dataset_label=""):
                  family='monospace', bbox=dict(facecolor='whitesmoke', alpha=0.8, edgecolor='silver', boxstyle='round,pad=1'))
     
     plt.tight_layout(rect=[0, 0, 1, 0.95])
-    out_filename = output_dir / f"{prefix}00_dataset_summary.png"
+    out_filename = output_dir / f"h36m_{prefix}_dataset_summary.png"
     plt.savefig(out_filename, dpi=300)
     plt.close()
     print(f"Saved dataset summary plot to: {out_filename}")
@@ -150,7 +150,7 @@ def plot_pd_feature_violins(df, output_dir, prefix="", dataset_label=""):
 
     plt.suptitle(f"Clinical PD Features by Severity Class{title_suffix}", fontsize=16, fontweight='bold', y=1.02)
     plt.tight_layout()
-    plt.savefig(output_dir / f"{prefix}02_pd_features_summary.png", dpi=300, bbox_inches='tight')
+    plt.savefig(output_dir / f"h36m_{prefix}_pd_features_summary.png", dpi=300, bbox_inches='tight')
     plt.close()
 
 # ---------------------------------------------------------
@@ -262,7 +262,7 @@ def plot_pd_feature_comparison_plots(df, distances_df, output_dir):
 
         plt.tight_layout()
         
-        out_filename = output_dir / f"02b_{key}_comparison_plot.png"
+        out_filename = output_dir / f"h36m_{key}_comparison.png"
         plt.savefig(out_filename, dpi=300, bbox_inches='tight')
         plt.close()
 

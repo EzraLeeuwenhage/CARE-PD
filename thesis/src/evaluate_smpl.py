@@ -4,14 +4,16 @@ import numpy as np
 from collections import defaultdict
 from pathlib import Path
 from scipy.spatial.transform import Rotation
-from scipy.signal import find_peaks
-from sklearn.decomposition import PCA
 from thesis.src.utils.geometry_utils import pose_to_rmat
 
+
 class SMPLEvaluator:
-    def __init__(self, fps=30):
-        """Evaluator for SMPL pose sequences using Geodesic Distance on SO(3)."""
+    def __init__(self, fps: int = 30, nfft: int = 2048):
+        """Evaluator for SMPL pose sequences using SO(3) Geodesic Distance and Clinical Gait Metrics."""
         self.fps = fps
+        self.nfft = nfft
+        self.trapz_fn = getattr(np, 'trapezoid', getattr(np, 'trapz', None))
+
         # Standard 24 SMPL model joint names ordered by index
         self.JOINT_NAMES = [
             'Pelvis', 'L_Hip', 'R_Hip', 'Spine1', 'L_Knee', 'R_Knee',
@@ -20,7 +22,7 @@ class SMPLEvaluator:
             'L_Elbow', 'R_Elbow', 'L_Wrist', 'R_Wrist', 'L_Hand', 'R_Hand'
         ]
         
-        # Self-defined categories for analysis
+        # Self-defined categories for MPJAE analysis
         self.JOINT_GROUPS = {
             'Overall': list(range(24)),
             'Lower Body': [0, 1, 2, 4, 5, 7, 8, 10, 11],
@@ -75,209 +77,142 @@ class SMPLEvaluator:
             
         # Collapse all leading dimensions EXCEPT the last joint dimension (dim=-1)
         dims_to_collapse = tuple(range(d_geo.dim() - 1))
-        per_joint_mpjae = torch.mean(d_geo, dim=dims_to_collapse) # Shape: (24,)
-        
+        per_joint_mpjae = torch.mean(d_geo, dim=dims_to_collapse)
         return per_joint_mpjae.cpu().numpy()
 
-    # -------------------
-    # Arm Swing Asymmetry
-    # -------------------
-    def _compute_pairwise_geodesic(self, R1, R2):
-        """Pairwise geodesic distance between two (3, 3) numpy rotation matrices."""
-        R_rel = np.dot(R1, R2.T)
-        trace = np.trace(R_rel)
-        cos_theta = np.clip((trace - 1.0) / 2.0, -1.0 + 1e-7, 1.0 - 1e-7)
-        return np.arccos(cos_theta)
-
-    def extract_and_validate_arm_swing(self, rot_matrices_3x3, prominence=0.05):
+    # -------------------------------------------------------------
+    # CLINICAL GAIT METRICS (BRADYKINESIA, RIGIDITY, SMOOTHNESS)
+    # -------------------------------------------------------------
+    def compute_clinical_metrics(self, seq_pose):
+        """Extracts the 5 core clinical metrics from sequence poses:
+        1. Ankle Bradykinesia: min(L, R) physical amplitude AUC (0.5–8.0 Hz, deg/s·Hz)
+        2. Spine Rigidity: mean(Spine2, Spine3) physical amplitude AUC (0.5–8.0 Hz, deg/s·Hz)
+        3. Ankle SI: Robinson Symmetry Index on bilateral ankles (%)
+        4. Wrist Smoothness AUC: max(L, R) relative PSD energy in jitter band (3.0–8.0 Hz, %)
+        5. Hand Smoothness AUC: max(L, R) relative PSD energy in jitter band (3.0–8.0 Hz, %)
         """
-        Extracts 1D pendular swing via PCA and cross-validates against SO(3) Geodesic Distance.
-        """
-        rotvecs = Rotation.from_matrix(rot_matrices_3x3).as_rotvec()
-        
-        # 1D PCA Pendulum Projection
-        pca = PCA(n_components=1)
-        swing_1d = pca.fit_transform(rotvecs).flatten()
-        
-        peaks, _ = find_peaks(swing_1d, prominence=prominence)
-        valleys, _ = find_peaks(-swing_1d, prominence=prominence)
-        
-        cycle_validations = []
-        amplitudes_pca = []
-        
-        # Cross-validate each peak-valley pair with max geodesic distance
-        for p in peaks:
-            prior_valleys = valleys[valleys < p]
-            if len(prior_valleys) == 0:
-                continue
-            v = prior_valleys[-1]
-            
-            # PCA amplitude (scalar projection)
-            pca_amp = abs(swing_1d[p] - swing_1d[v])
-            amplitudes_pca.append(pca_amp)
-            
-            # Ground-truth SO(3) Geodesic ROM
-            geo_rom = self._compute_pairwise_geodesic(rot_matrices_3x3[p], rot_matrices_3x3[v])
-            
-            # verify that peak and valley are aligned with max geodesic distance frames
-            window_matrices = rot_matrices_3x3[v:p+1]
-            geo_distances_from_v = [self._compute_pairwise_geodesic(rot_matrices_3x3[v], R_t) for R_t in window_matrices]
-            geo_argmax_frame = v + np.argmax(geo_distances_from_v)
-            
-            frame_aligned = (geo_argmax_frame == p)
-            amplitude_error = abs(pca_amp - geo_rom) / geo_rom if geo_rom > 0 else 0.0
-            
-            cycle_validations.append({
-                "valley_frame": int(v),
-                "peak_frame": int(p),
-                "geo_argmax_frame": int(geo_argmax_frame),
-                "frame_aligned": bool(frame_aligned),
-                "pca_amplitude_rad": float(pca_amp),
-                "geo_rom_rad": float(geo_rom),
-                "rel_error": float(amplitude_error)
-            })
-            
-        if amplitudes_pca:
-            mean_rom = np.mean(amplitudes_pca)
-        else:
-            # if no proper swing cycles, fallback to max-min of the 1D projection
-            mean_rom = float(np.max(swing_1d) - np.min(swing_1d))
-        return mean_rom, cycle_validations
+        rot_mats = pose_to_rmat(seq_pose)
+        if isinstance(rot_mats, torch.Tensor):
+            rot_mats = rot_mats.detach().cpu().numpy()
 
-    def compute_arm_swing_asymmetry(self, seq_pose, prominence=0.05):
-        """
-        Wrapper to compute L/R swing asymmetry directly from a sequence tensor.
-        ROM_L/R are the means of the ROM for each sequence.
-        Asymmetry is the absolute difference between L and R mean ROM.
-
-        Args:
-            seq_pose: numpy array or tensor of shape (T, 24, D)
-        """
-        R_seq = pose_to_rmat(seq_pose).numpy()
-        
-        L_shoulder_idx = self.JOINT_NAMES.index('L_Shoulder')
-        R_shoulder_idx = self.JOINT_NAMES.index('R_Shoulder')
-        
-        rom_L, val_L = self.extract_and_validate_arm_swing(R_seq[:, L_shoulder_idx, :, :], prominence)
-        rom_R, val_R = self.extract_and_validate_arm_swing(R_seq[:, R_shoulder_idx, :, :], prominence)
-        
-        # Calculate Robinson Symmetry Index
-        denominator = rom_L + rom_R + 1e-7
-        si_asymmetry = (2.0 * abs(rom_L - rom_R) / denominator) * 100.0
-
-        return rom_L, rom_R, si_asymmetry, val_L, val_R
-
-    # ---------
-    # SPARC
-    # ---------
-    def _compute_single_sparc(self, a, padlevel=4, fc_max=5.0, amp_th=0.01):
-        """Computes Spectral Arc Length for a single 1D signal. (TODO: cite SPARC paper)"""
-        if len(a) < 2 or np.all(a == 0):
-            return np.nan, None, None, None
-            
-        nfft = int(pow(2, np.ceil(np.log2(len(a))) + padlevel))
-        
-        A = np.abs(np.fft.rfft(a, n=nfft))
-        A_0 = A[0]
-        if A_0 == 0:
-            return 0.0, None, None, None
-            
-        A_norm = A / A_0
-        f = np.fft.rfftfreq(nfft, d=1.0/self.fps)
-        
-        # Adaptive cutoff bounded by fc_max (typically 5Hz for human gait)
-        valid_f_mask = f <= fc_max
-        f_search = f[valid_f_mask]
-        A_search = A_norm[valid_f_mask]
-        
-        # Find minimum frequency omega where A_norm(r) < amp_th for all r > omega
-        above_th_idxs = np.where(A_search >= amp_th)[0]
-        if len(above_th_idxs) > 0:
-            idx_c = above_th_idxs[-1]
-            fc_adj = f_search[idx_c]
-        else:
-            idx_c = 0
-            fc_adj = f_search[0]
-            
-        if fc_adj == 0:
-            return 0.0, f, A_norm, fc_adj
-            
-        f_int = f[:idx_c + 1]
-        A_int = A_norm[:idx_c + 1]
-        
-        # Discrete integral
-        dx = np.diff(f_int) / fc_adj
-        dy = np.diff(A_int)
-        arc_length = -np.sum(np.sqrt(dx**2 + dy**2))
-        
-        return arc_length, f, A_norm, fc_adj
-
-    def compute_sparc_for_sequence(self, seq_pose, plot_joint=None, plot_prefix=""):
-        """Extracts angular velocity magnitude and computes SPARC for all 24 joints."""
-        rot_mats = pose_to_rmat(seq_pose).numpy()
         T, J, _, _ = rot_mats.shape
         if T < 2:
-            return np.full(J, np.nan)
-            
+            return {
+                "ankle_bradykinesia": np.nan,
+                "spine_rigidity": np.nan,
+                "ankle_si": np.nan,
+                "wrist_smoothness_auc": np.nan,
+                "hand_smoothness_auc": np.nan
+            }
+
+        # Calculate relative angular velocities on SO(3)
         R_t = rot_mats[:-1]
         R_next = rot_mats[1:]
-        
-        # Transpose each 3x3 matrix in R_t: (T-1, J, 3, 3)
         R_t_T = np.swapaxes(R_t, -1, -2)
         R_rel = np.matmul(R_t_T, R_next)
-        
+
         R_rel_flat = R_rel.reshape(-1, 3, 3)
         rotvecs = Rotation.from_matrix(R_rel_flat).as_rotvec()
-        rotvecs = rotvecs.reshape(T-1, J, 3)
-        
-        omega_t = rotvecs * self.fps
-        a_t = np.linalg.norm(omega_t, axis=-1)
-        
-        sparc_vals = np.zeros(J)
-        for j in range(J):
-            arc_len, f, A_norm, fc_adj = self._compute_single_sparc(a_t[:, j])
-            sparc_vals[j] = arc_len
+        rotvecs = rotvecs.reshape(T - 1, J, 3)
+
+        omega_t = rotvecs * self.fps  # rad/s
+        a_t = np.linalg.norm(omega_t, axis=-1)  # (T-1, J) in rad/s
+
+        N = a_t.shape[0]
+        RAD2DEG = 180.0 / np.pi
+        f = np.fft.rfftfreq(self.nfft, d=1.0 / self.fps)
+
+        mask_brady = (f >= 0.5) & (f <= 8.0)
+        mask_jitter = (f > 3.0) & (f <= 8.0)
+
+        def _compute_phys_auc(joint_idx: int) -> float:
+            """Computes Cumulative Harmonic Amplitude (0.5-8.0 Hz) in deg/s·Hz to quantify bradykinesia."""
+            velocity_rad_per_s = a_t[:, joint_idx]
             
-            if plot_joint and self.JOINT_NAMES[j] == plot_joint and f is not None:
-                import matplotlib.pyplot as plt
-                plt.figure(figsize=(8, 4))
-                plt.plot(f, A_norm, label=f'Normalized Spectrum ({plot_prefix})')
-                plt.axvline(fc_adj, color='r', linestyle='--', label=f'Adaptive Cutoff = {fc_adj:.2f} Hz')
-                plt.title(f'SPARC Frequency Spectrum - {plot_joint} ({plot_prefix})\nSPARC: {arc_len:.4f}')
-                plt.xlabel('Frequency (Hz)')
-                plt.ylabel('Normalized Magnitude')
-                plt.legend()
-                plt.grid(True)
-                plt.tight_layout()
-                plt.savefig(f'sparc_spectrum_{plot_prefix}_{plot_joint}.png')
-                plt.close()
-                print(f"Saved SPARC spectrum plot for {plot_joint} ({plot_prefix})")
-                
-        return sparc_vals
+            # Remove DC component (0 Hz) to normalize for walking speed
+            velocity_centered = velocity_rad_per_s - np.mean(velocity_rad_per_s)
+            
+            # DFT using FFT algorithm magnitudes
+            fft_magnitudes = np.abs(np.fft.rfft(velocity_centered, n=self.nfft))
+            
+            # Normalize by sequence length (2/N) for duration invariance, convert rad/s -> deg/s
+            num_frames = len(velocity_centered)
+            harmonic_amplitudes_deg = (2.0 / num_frames) * fft_magnitudes * RAD2DEG
+            
+            # Integrate physical amplitude across the functional gait band (0.5 - 8.0 Hz)
+            band_amplitudes = harmonic_amplitudes_deg[mask_brady]
+            band_frequencies = f[mask_brady]
+            auc_deg_per_s_hz = float(self.trapz_fn(band_amplitudes, band_frequencies))
+            
+            return auc_deg_per_s_hz
 
-    def _process_single_sequence(self, k, gt_seq, gen_seq, sev, plot_sparc_joint):
+        def _compute_smoothness_auc(joint_idx: int) -> float:
+            """Computes Relative Kinetic Energy (%) consumed by 3.0-8.0 Hz tremor/jitter."""
+            velocity_rad_per_s = a_t[:, joint_idx]
+            
+            # Remove DC component
+            velocity_centered = velocity_rad_per_s - np.mean(velocity_rad_per_s)
+            
+            # FFT magnitudes
+            fft_magnitudes = np.abs(np.fft.rfft(velocity_centered, n=self.nfft))
+            
+            # Square amplitudes to get Power Spectral Density (proportional to rotational kinetic energy)
+            raw_power_spectrum = (fft_magnitudes ** 2) / self.nfft
+            
+            # Normalize by total power to isolate spectral shape independent of overall walking speed
+            total_energy = np.sum(raw_power_spectrum) + 1e-8
+            relative_energy_distribution = raw_power_spectrum / total_energy
+            
+            # Sum relative energy in the pathological tremor/jitter band (3.0 - 8.0 Hz) as a percentage
+            jitter_energy_fraction = np.sum(relative_energy_distribution[mask_jitter])
+            jitter_energy_pct = float(jitter_energy_fraction) * 100.0
+            
+            return jitter_energy_pct
+
+        # Ankle Bradykinesia & Symmetry Index (L_Ankle=7, R_Ankle=8)
+        auc_l_ank = _compute_phys_auc(7)
+        auc_r_ank = _compute_phys_auc(8)
+        ankle_bradykinesia = min(auc_l_ank, auc_r_ank)
+        ankle_si = (2.0 * abs(auc_l_ank - auc_r_ank) / (auc_l_ank + auc_r_ank + 1e-8)) * 100.0
+
+        # Spine Rigidity (Spine2=6, Spine3=9)
+        auc_s2 = _compute_phys_auc(6)
+        auc_s3 = _compute_phys_auc(9)
+        spine_rigidity = 0.5 * (auc_s2 + auc_s3)
+
+        # Wrist Smoothness AUC (L_Wrist=20, R_Wrist=21)
+        jit_l_wri = _compute_smoothness_auc(20)
+        jit_r_wri = _compute_smoothness_auc(21)
+        wrist_smoothness_auc = max(jit_l_wri, jit_r_wri)
+
+        # Hand Smoothness AUC (L_Hand=22, R_Hand=23)
+        jit_l_hnd = _compute_smoothness_auc(22)
+        jit_r_hnd = _compute_smoothness_auc(23)
+        hand_smoothness_auc = max(jit_l_hnd, jit_r_hnd)
+
+        return {
+            "ankle_bradykinesia": ankle_bradykinesia,
+            "spine_rigidity": spine_rigidity,
+            "ankle_si": ankle_si,
+            "wrist_smoothness_auc": wrist_smoothness_auc,
+            "hand_smoothness_auc": hand_smoothness_auc
+        }
+
+    def _process_single_sequence(self, k, gt_seq, gen_seq, sev):
         """Helper method for parallelized metric computations."""
-        per_joint_err = self.compute_mpjae(gt_seq, gen_seq, return_per_joint=True) # (24,)
-        
-        sparc_gt = self.compute_sparc_for_sequence(gt_seq, plot_joint=plot_sparc_joint, plot_prefix="GT")
-        sparc_gen = self.compute_sparc_for_sequence(gen_seq, plot_joint=plot_sparc_joint, plot_prefix="Gen")
-
-        rom_L_gt, rom_R_gt, si_asym_gt, val_L_gt, val_R_gt = self.compute_arm_swing_asymmetry(gt_seq, prominence=0.05)
-        rom_L_gen, rom_R_gen, si_asym_gen, val_L_gen, val_R_gen = self.compute_arm_swing_asymmetry(gen_seq, prominence=0.05)
+        per_joint_err = self.compute_mpjae(gt_seq, gen_seq, return_per_joint=True)
+        gt_clinical = self.compute_clinical_metrics(gt_seq)
+        gen_clinical = self.compute_clinical_metrics(gen_seq)
 
         return {
             "key": k,
             "sev": sev,
             "per_joint_err": per_joint_err,
-            "sparc_gt": sparc_gt,
-            "sparc_gen": sparc_gen,
-            "rom_L_gt": rom_L_gt, "rom_R_gt": rom_R_gt, "si_asym_gt": si_asym_gt, 
-            "val_L_gt": val_L_gt, "val_R_gt": val_R_gt,
-            "rom_L_gen": rom_L_gen, "rom_R_gen": rom_R_gen, "si_asym_gen": si_asym_gen, 
-            "val_L_gen": val_L_gen, "val_R_gen": val_R_gen,
+            "gt_clinical": gt_clinical,
+            "gen_clinical": gen_clinical,
         }
 
-    def evaluate_from_memory(self, gt_data, gen_data, labels, plot_sparc_joint=None):
+    def evaluate_from_memory(self, gt_data, gen_data, labels):
         """Computes metrics from pose dictionaries in memory."""
         from joblib import Parallel, delayed
         
@@ -285,18 +220,11 @@ class SMPLEvaluator:
 
         results = defaultdict(lambda: defaultdict(list))
         per_sequence_results = {}
-        misaligned_records = []
-        total_cycles_count = 0
-        misaligned_count = 0
         
         tasks = []
-        has_plotted_sparc = False
         for k in common_keys:
             sev = labels.get(k, "Unknown")
-            plot_this_iter = plot_sparc_joint if not has_plotted_sparc else None
-            if plot_this_iter:
-                has_plotted_sparc = True
-            tasks.append((k, gt_data[k], gen_data[k], sev, plot_this_iter))
+            tasks.append((k, gt_data[k], gen_data[k], sev))
             
         print(f"  [SMPLEvaluator] Processing {len(tasks)} sequences in parallel...")
         extracted_data = Parallel(n_jobs=-1)(
@@ -307,102 +235,64 @@ class SMPLEvaluator:
             k = res["key"]
             sev = res["sev"]
             per_joint_err = res["per_joint_err"]
-            sparc_gt = res["sparc_gt"]
-            sparc_gen = res["sparc_gen"]
+            gt_c = res["gt_clinical"]
+            gen_c = res["gen_clinical"]
             
-            # broad category errors & SPARC
+            # Broad category MPJAE
             for group_name, joint_indices in self.JOINT_GROUPS.items():
                 group_val = float(np.mean(per_joint_err[joint_indices]))
-                sparc_gt_val = float(np.mean(sparc_gt[joint_indices]))
-                sparc_gen_val = float(np.mean(sparc_gen[joint_indices]))
-                
                 results["Overall"][group_name].append(group_val)
-                results["Overall"][f"GT_SPARC_{group_name}"].append(sparc_gt_val)
-                results["Overall"][f"Gen_SPARC_{group_name}"].append(sparc_gen_val)
-                
                 if sev != "Unknown":
                     results[f"Class {sev}"][group_name].append(group_val)
-                    results[f"Class {sev}"][f"GT_SPARC_{group_name}"].append(sparc_gt_val)
-                    results[f"Class {sev}"][f"Gen_SPARC_{group_name}"].append(sparc_gen_val)
 
-            # individual joint errors & SPARC
+            # Individual joint MPJAE
             for idx, joint_name in enumerate(self.JOINT_NAMES):
                 joint_val = float(per_joint_err[idx])
-                s_gt_val = float(sparc_gt[idx])
-                s_gen_val = float(sparc_gen[idx])
-                
                 results["Overall"][joint_name].append(joint_val)
-                results["Overall"][f"GT_SPARC_{joint_name}"].append(s_gt_val)
-                results["Overall"][f"Gen_SPARC_{joint_name}"].append(s_gen_val)
-                
                 if sev != "Unknown":
                     results[f"Class {sev}"][joint_name].append(joint_val)
-                    results[f"Class {sev}"][f"GT_SPARC_{joint_name}"].append(s_gt_val)
-                    results[f"Class {sev}"][f"Gen_SPARC_{joint_name}"].append(s_gen_val)
 
-            arm_metrics = {
-                "GT_ROM_L": float(res["rom_L_gt"]),
-                "GT_ROM_R": float(res["rom_R_gt"]),
-                "GT_Symmetry_Index": float(res["si_asym_gt"]),
-                "Gen_ROM_L": float(res["rom_L_gen"]),
-                "Gen_ROM_R": float(res["rom_R_gen"]),
-                "Gen_Symmetry_Index": float(res["si_asym_gen"]),
-                "Symmetry_Index_Error": float(abs(res["si_asym_gt"] - res["si_asym_gen"]))
+            # Clinical Gait Metrics (Distributions & Errors)
+            clinical_metrics_map = {
+                "GT_Ankle_Bradykinesia": float(gt_c["ankle_bradykinesia"]),
+                "Gen_Ankle_Bradykinesia": float(gen_c["ankle_bradykinesia"]),
+                "Ankle_Bradykinesia_Error": float(abs(gt_c["ankle_bradykinesia"] - gen_c["ankle_bradykinesia"])),
+
+                "GT_Spine_Rigidity": float(gt_c["spine_rigidity"]),
+                "Gen_Spine_Rigidity": float(gen_c["spine_rigidity"]),
+                "Spine_Rigidity_Error": float(abs(gt_c["spine_rigidity"] - gen_c["spine_rigidity"])),
+
+                "GT_Ankle_SI": float(gt_c["ankle_si"]),
+                "Gen_Ankle_SI": float(gen_c["ankle_si"]),
+                "Ankle_SI_Error": float(abs(gt_c["ankle_si"] - gen_c["ankle_si"])),
+
+                "GT_Wrist_Smoothness_AUC": float(gt_c["wrist_smoothness_auc"]),
+                "Gen_Wrist_Smoothness_AUC": float(gen_c["wrist_smoothness_auc"]),
+                "Wrist_Smoothness_AUC_Error": float(abs(gt_c["wrist_smoothness_auc"] - gen_c["wrist_smoothness_auc"])),
+
+                "GT_Hand_Smoothness_AUC": float(gt_c["hand_smoothness_auc"]),
+                "Gen_Hand_Smoothness_AUC": float(gen_c["hand_smoothness_auc"]),
+                "Hand_Smoothness_AUC_Error": float(abs(gt_c["hand_smoothness_auc"] - gen_c["hand_smoothness_auc"])),
             }
 
-            for metric_name, val in arm_metrics.items():
+            for metric_name, val in clinical_metrics_map.items():
                 results["Overall"][metric_name].append(val)
                 if sev != "Unknown":
                     results[f"Class {sev}"][metric_name].append(val)
-
-            for split_name, side_name, val_list in [
-                ("GT", "L", res["val_L_gt"]),
-                ("GT", "R", res["val_R_gt"]),
-                ("Gen", "L", res["val_L_gen"]),
-                ("Gen", "R", res["val_R_gen"])
-            ]:
-                for cycle in val_list:
-                    total_cycles_count += 1
-                    if not cycle["frame_aligned"]:
-                        misaligned_count += 1
-                        misaligned_records.append({
-                            "sequence": k,
-                            "split": split_name,
-                            "side": side_name,
-                            "valley_frame": cycle["valley_frame"],
-                            "peak_frame": cycle["peak_frame"],
-                            "geo_argmax_frame": cycle["geo_argmax_frame"],
-                            "rel_error": cycle["rel_error"]
-                        })
 
             per_sequence_results[k] = {
                 "severity": sev,
                 "overall_mpjae": float(np.mean(per_joint_err[self.HARD_MPJAE_JOINTS])),
                 "per_joint_mpjae": {j_name: float(per_joint_err[i]) for i, j_name in enumerate(self.JOINT_NAMES)},
-                "sparc": {
-                    "gt": {
-                        "overall": float(np.mean(sparc_gt)),
-                        "per_joint": {j_name: float(sparc_gt[i]) for i, j_name in enumerate(self.JOINT_NAMES)}
-                    },
-                    "gen": {
-                        "overall": float(np.mean(sparc_gen)),
-                        "per_joint": {j_name: float(sparc_gen[i]) for i, j_name in enumerate(self.JOINT_NAMES)}
-                    }
-                },
-                "arm_swing": {
-                    "gt": {
-                        "rom_L": float(res["rom_L_gt"]),
-                        "rom_R": float(res["rom_R_gt"]),
-                        "symmetry_index": float(res["si_asym_gt"]),
-                        "cycles_L": res["val_L_gt"],
-                        "cycles_R": res["val_R_gt"]
-                    },
-                    "gen": {
-                        "rom_L": float(res["rom_L_gen"]),
-                        "rom_R": float(res["rom_R_gen"]),
-                        "symmetry_index": float(res["si_asym_gen"]),
-                        "cycles_L": res["val_L_gen"],
-                        "cycles_R": res["val_R_gen"]
+                "clinical_metrics": {
+                    "gt": gt_c,
+                    "gen": gen_c,
+                    "error": {
+                        "ankle_bradykinesia": float(abs(gt_c["ankle_bradykinesia"] - gen_c["ankle_bradykinesia"])),
+                        "spine_rigidity": float(abs(gt_c["spine_rigidity"] - gen_c["spine_rigidity"])),
+                        "ankle_si": float(abs(gt_c["ankle_si"] - gen_c["ankle_si"])),
+                        "wrist_smoothness_auc": float(abs(gt_c["wrist_smoothness_auc"] - gen_c["wrist_smoothness_auc"])),
+                        "hand_smoothness_auc": float(abs(gt_c["hand_smoothness_auc"] - gen_c["hand_smoothness_auc"])),
                     }
                 }
             }
@@ -411,7 +301,7 @@ class SMPLEvaluator:
         summary_results = {}
         for cls_key, metrics_dict in results.items():
             summary_results[cls_key] = {
-                metric_name: float(np.mean(vals))
+                metric_name: float(np.nanmean(vals))
                 for metric_name, vals in metrics_dict.items()
             }
                 
@@ -421,18 +311,13 @@ class SMPLEvaluator:
                 cls_key: {m: [float(x) for x in vals] for m, vals in metrics_dict.items()}
                 for cls_key, metrics_dict in results.items()
             },
-            "per_sequence_results": per_sequence_results,
-            "arm_swing_validation": {
-                "total_cycles_evaluated": total_cycles_count,
-                "misaligned_count": misaligned_count,
-                "misaligned_records": misaligned_records
-            }
+            "per_sequence_results": per_sequence_results
         }
             
         return summary_results, cache_data
 
-    def evaluate_and_cache(self, gt_npz_path, gen_npz_path, labels_path, cache_output_path, plot_sparc_joint=None):
-        """Loads unified GT/Gen datasets from disk, computes MPJAE, caches result."""
+    def evaluate_and_cache(self, gt_npz_path, gen_npz_path, labels_path, cache_output_path):
+        """Loads unified GT/Gen datasets from disk, computes metrics, and caches results to JSON."""
         with open(labels_path, 'r') as f:
             labels = json.load(f)["key_to_severity"]
 
@@ -442,7 +327,7 @@ class SMPLEvaluator:
         gt_data = gt_data['arr_0'].item() if 'arr_0' in gt_data.files else {k: gt_data[k] for k in gt_data.files}
         gen_data = gen_data['arr_0'].item() if 'arr_0' in gen_data.files else {k: gen_data[k] for k in gen_data.files}
         
-        summary_results, cache_data = self.evaluate_from_memory(gt_data, gen_data, labels, plot_sparc_joint)
+        summary_results, cache_data = self.evaluate_from_memory(gt_data, gen_data, labels)
                 
         out_path = Path(cache_output_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -461,7 +346,7 @@ if __name__ == "__main__":
     labels_path = base_dir / "h36m" / "gen_labels.json"
     output_path = base_dir / "evaluation" / "smpl_evaluation.json"
 
-    print(f"--- Running SMPL SO(3) Evaluation ---")
+    print("--- Running SMPL Clinical Evaluation ---")
     print(f"GT Data path:  {gt_path}")
     print(f"Gen Data path: {gen_path}")
     print(f"Labels path:   {labels_path}")
@@ -471,11 +356,12 @@ if __name__ == "__main__":
         gt_npz_path=str(gt_path),
         gen_npz_path=str(gen_path),
         labels_path=str(labels_path),
-        cache_output_path=str(output_path),
-        # plot_sparc_joint='R_Shoulder'
+        cache_output_path=str(output_path)
     )
 
-    print("\nSMPL SO(3) Evaluation Complete!")
+    print("\nSMPL Clinical Evaluation Complete!")
     for severity, metrics in smpl_summary.items():
-        print(f"  -> {severity:<10}: Overall MPJAE = {metrics['Overall']:.6f} rad | \
-              GT SPARC = {metrics['GT_SPARC_Overall']:.4f} | Gen SPARC = {metrics['Gen_SPARC_Overall']:.4f}")
+        print(f"  -> {severity:<10}: MPJAE = {np.degrees(metrics['Overall']):.2f}° | "
+              f"Ankle Brady (GT/Gen) = {metrics['GT_Ankle_Bradykinesia']:.1f} / {metrics['Gen_Ankle_Bradykinesia']:.1f} deg/s·Hz | "
+              f"Spine Rigidity (GT/Gen) = {metrics['GT_Spine_Rigidity']:.1f} / {metrics['Gen_Spine_Rigidity']:.1f} deg/s·Hz | "
+              f"Wrist Jitter (GT/Gen) = {metrics['GT_Wrist_Smoothness_AUC']:.1f}% / {metrics['Gen_Wrist_Smoothness_AUC']:.1f}%")

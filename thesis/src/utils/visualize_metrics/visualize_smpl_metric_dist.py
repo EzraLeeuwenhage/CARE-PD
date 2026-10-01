@@ -6,10 +6,69 @@ import numpy as np
 import pandas as pd
 from collections import defaultdict
 from pathlib import Path
+from scipy.spatial.transform import Rotation
 
 from thesis.src.evaluate_distributions import DistributionComparator
+from thesis.src.utils.geometry_utils import pose_to_rmat
 
 
+SMPL_JOINT_NAMES = [
+    'Pelvis', 'L_Hip', 'R_Hip', 'Spine1', 'L_Knee', 'R_Knee',
+    'Spine2', 'L_Ankle', 'R_Ankle', 'Spine3', 'L_Foot', 'R_Foot',
+    'Neck', 'L_Collar', 'R_Collar', 'Head', 'L_Shoulder', 'R_Shoulder',
+    'L_Elbow', 'R_Elbow', 'L_Wrist', 'R_Wrist', 'L_Hand', 'R_Hand'
+]
+
+SMPL_CATEGORIES = [
+    'Overall', 'Lower Body', 'Upper Body', 'Hips', 
+    'Knees', 'Ankles', 'Shoulders', 
+    'Left Body', 'Right Body'
+]
+
+CLINICAL_METRICS_SPECS = [
+    {
+        "name": "Ankle Bradykinesia",
+        "gt_key": "GT_Ankle_Bradykinesia",
+        "gen_key": "Gen_Ankle_Bradykinesia",
+        "filename": "smpl_bradykinesia_worse_ankle_comparison.png",
+        "ylabel": "Physical Amplitude AUC (deg/s·Hz)",
+        "clinical_note": "Lower = More Severe"
+    },
+    {
+        "name": "Spine Rigidity",
+        "gt_key": "GT_Spine_Rigidity",
+        "gen_key": "Gen_Spine_Rigidity",
+        "filename": "smpl_spine_rigidity_comparison.png",
+        "ylabel": "Physical Amplitude AUC (deg/s·Hz)",
+        "clinical_note": "Lower = More Severe"
+    },
+    {
+        "name": "Ankle SI",
+        "gt_key": "GT_Ankle_SI",
+        "gen_key": "Gen_Ankle_SI",
+        "filename": "smpl_asymmetry_ankle_si_comparison.png",
+        "ylabel": "Robinson Symmetry Index (%)",
+        "clinical_note": "Higher = More Asymmetric"
+    },
+    {
+        "name": "Wrist Smoothness AUC",
+        "gt_key": "GT_Wrist_Smoothness_AUC",
+        "gen_key": "Gen_Wrist_Smoothness_AUC",
+        "filename": "smpl_smoothness_wrist_auc_comparison.png",
+        "ylabel": "Relative Jitter Energy (%)",
+        "clinical_note": "Higher = More Severe"
+    },
+    {
+        "name": "Hand Smoothness AUC",
+        "gt_key": "GT_Hand_Smoothness_AUC",
+        "gen_key": "Gen_Hand_Smoothness_AUC",
+        "filename": "smpl_smoothness_hand_auc_comparison.png",
+        "ylabel": "Relative Jitter Energy (%)",
+        "clinical_note": "Higher = More Severe"
+    }
+]
+
+# MPJAE VISUALIZATIONS
 def plot_smpl_mpjae(data, output_dir):
     """Plots SMPL MPJAE by category and by individual joint in degrees."""
     if isinstance(data, (str, Path)):
@@ -25,25 +84,10 @@ def plot_smpl_mpjae(data, output_dir):
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Define standard categories vs. 24 individual joints
-    categories = [
-        'Overall', 'Lower Body', 'Upper Body', 'Hips', 
-        'Knees', 'Ankles', 'Shoulders', 
-        'Left Body', 'Right Body'
-    ]
-    all_joints = [
-        'Pelvis', 'L_Hip', 'R_Hip', 'Spine1', 'L_Knee', 'R_Knee',
-        'Spine2', 'L_Ankle', 'R_Ankle', 'Spine3', 'L_Foot', 'R_Foot',
-        'Neck', 'L_Collar', 'R_Collar', 'Head', 'L_Shoulder', 'R_Shoulder',
-        'L_Elbow', 'R_Elbow', 'L_Wrist', 'R_Wrist', 'L_Hand', 'R_Hand'
-    ]
-
-    # --------------------------------------------
-    # BROAD CATEGORIES & SEVERITY CLASSES
-    # --------------------------------------------
+    # Broad Categories Breakdown
     cat_records = []
     for cls_key, metrics_dict in raw_dist.items():
-        for cat_name in categories:
+        for cat_name in SMPL_CATEGORIES:
             if cat_name in metrics_dict:
                 for val in metrics_dict[cat_name]:
                     cat_records.append({
@@ -54,39 +98,27 @@ def plot_smpl_mpjae(data, output_dir):
     
     if cat_records:
         df_cat = pd.DataFrame(cat_records)
-
         fig, axes = plt.subplots(1, 2, figsize=(18, 6))
 
-        # Left Panel: Overall distributions across broad categories (Boxplot)
+        # Overall distributions across broad categories (Boxplot)
         df_cat_overall = df_cat[df_cat["Severity Class"] == "Overall"]
         sns.boxplot(
-            data=df_cat_overall, 
-            x="Category", 
-            y="MPJAE (deg)", 
-            ax=axes[0], 
-            order=categories,
-            color="lightcoral",
-            showfliers=False,
-            width=0.5
+            data=df_cat_overall, x="Category", y="MPJAE (deg)", 
+            ax=axes[0], order=SMPL_CATEGORIES, color="lightcoral", 
+            showfliers=False, width=0.5
         )
         axes[0].set_title("6D Pose Reconstruction Error by Body Region (Overall Dataset)", fontsize=13, fontweight='bold')
         axes[0].set_ylabel("Angular Error (degrees)")
         axes[0].set_xlabel("")
         axes[0].tick_params(axis='x', rotation=30)
 
-        # Right Panel: Category trends across clinical severity classes
+        # RCategory trends across clinical severity classes
         df_cat_classes = df_cat[df_cat["Severity Class"] != "Overall"]
         cls_order = sorted(df_cat_classes["Severity Class"].unique())
         sns.barplot(
-            data=df_cat_classes, 
-            x="Category", 
-            y="MPJAE (deg)", 
-            hue="Severity Class", 
-            ax=axes[1],
-            order=categories, 
-            hue_order=cls_order, 
-            palette="muted", 
-            errorbar="se"
+            data=df_cat_classes, x="Category", y="MPJAE (deg)", hue="Severity Class", 
+            ax=axes[1], order=SMPL_CATEGORIES, hue_order=cls_order, 
+            palette="muted", errorbar="se"
         )
         axes[1].set_title("Mean Angular Error by Region across Severity Classes", fontsize=13, fontweight='bold')
         axes[1].set_ylabel("Mean MPJAE (degrees)")
@@ -95,17 +127,15 @@ def plot_smpl_mpjae(data, output_dir):
         axes[1].legend(title="Severity Class", loc="upper right")
 
         plt.tight_layout()
-        cat_plot_path = out_dir / "03a_smpl_mpjae_categories.png"
+        cat_plot_path = out_dir / "smpl_mpjae_categories.png"
         plt.savefig(cat_plot_path, dpi=300)
         plt.close()
         print(f"Saved SMPL Category breakdown plot to: {cat_plot_path}")
 
-    # -----------------------------
-    # 24 INDIVIDUAL JOINTS
-    # -----------------------------
+    # Individual 24 Joints Breakdown
     joint_records = []
     overall_metrics = raw_dist.get("Overall", {})
-    for joint_name in all_joints:
+    for joint_name in SMPL_JOINT_NAMES:
         if joint_name in overall_metrics:
             for val in overall_metrics[joint_name]:
                 joint_records.append({
@@ -121,21 +151,14 @@ def plot_smpl_mpjae(data, output_dir):
 
         plt.figure(figsize=(10, 8))
         sns.boxplot(
-            data=df_joints, 
-            y="Joint", 
-            x="MPJAE (deg)", 
-            order=joint_order,
-            palette="vlag_r", 
-            showfliers=False
+            data=df_joints, y="Joint", x="MPJAE (deg)", 
+            order=joint_order, palette="vlag_r", showfliers=False
         )
 
         # Vertical dashed red line for Overall Mean MPJAE across all joints
         overall_mean = np.degrees(np.mean(overall_metrics.get("Overall", [0])))
         plt.axvline(
-            overall_mean, 
-            color="red", 
-            linestyle="--", 
-            linewidth=1.8, 
+            overall_mean, color="red", linestyle="--", linewidth=1.8, 
             label=f"Overall Mean: {overall_mean:.2f}°"
         )
 
@@ -146,21 +169,22 @@ def plot_smpl_mpjae(data, output_dir):
         plt.grid(axis='x', linestyle='--', alpha=0.6)
 
         plt.tight_layout()
-        joint_plot_path = out_dir / "03b_smpl_mpjae_all_24_joints.png"
+        joint_plot_path = out_dir / "smpl_mpjae_all_24_joints.png"
         plt.savefig(joint_plot_path, dpi=300)
         plt.close()
-        print(f"Saved 24-Joint ordered breakdown plot to: {joint_plot_path}")
+        print(f"Saved 24-Joint breakdown plot to: {joint_plot_path}")
 
 
-def plot_arm_swing_metrics(data, output_dir, distances_df=None):
-    """Plots boxplot distributions for Arm Swing Asymmetry with optional distance balloons."""
+# BRADYKINESIA AND SMOOTHNESS VISUALIZATIONS
+def plot_clinical_metric_distributions(data, output_dir, distances_df=None, show_outliers=False):
+    """Plots standalone Ground Truth vs. Generated distribution figures for each clinical metric."""
     if isinstance(data, (str, Path)):
         with open(data, 'r') as f:
             data = json.load(f)
-            
+
     raw_dist = data.get("raw_distributions", {})
-    if not raw_dist or "Overall" not in raw_dist or "GT_Symmetry_Index" not in raw_dist["Overall"]:
-        print("No Arm Swing metrics found in JSON. Skipping arm swing plot.")
+    if not raw_dist:
+        print("No raw distributions found in JSON.")
         return
 
     sns.set_theme(style="whitegrid")
@@ -173,399 +197,251 @@ def plot_arm_swing_metrics(data, output_dir, distances_df=None):
         if score < 0.40: return '#ffb366' # Orange
         return '#ff6666' # Red
 
-    # Extract only the asymmetry metrics into a DataFrame
-    records = []
-    for cls_key, metrics_dict in raw_dist.items():
-        for val in metrics_dict.get("GT_Symmetry_Index", []):
-            records.append({"Severity Class": cls_key, "Source": "Ground Truth", "Value": val})
-        for val in metrics_dict.get("Gen_Symmetry_Index", []):
-            records.append({"Severity Class": cls_key, "Source": "Generated", "Value": val})
+    palette = {"Ground Truth": "cornflowerblue", "Generated": "salmon"}
 
-    df = pd.DataFrame(records)
+    for spec in CLINICAL_METRICS_SPECS:
+        metric_name = spec["name"]
+        gt_key = spec["gt_key"]
+        gen_key = spec["gen_key"]
 
-    # Determine X-axis order (Overall first, then Class 1, 2, 3...)
-    cls_order = ["Overall"] + sorted([c for c in df["Severity Class"].unique() if c != "Overall"])
-    
-    # Single Panel Figure Layout
-    fig, ax = plt.subplots(1, 1, figsize=(14, 6))
-    
-    metric_name = "Swing Asymmetry (SI)"
-    palette = {"Ground Truth": "lightsteelblue", "Generated": "lightcoral"}
+        records = []
+        for sev_key, metrics_dict in raw_dist.items():
+            cls_name = "Overall" if sev_key.lower() == "overall" else (f"Class {sev_key}" if not str(sev_key).startswith("Class ") else str(sev_key))
+            for val in metrics_dict.get(gt_key, []):
+                records.append({"Severity Class": cls_name, "Source": "Ground Truth", "Value": val})
+            for val in metrics_dict.get(gen_key, []):
+                records.append({"Severity Class": cls_name, "Source": "Generated", "Value": val})
 
-    # Standardized boxplot to avoid artificial smoothing
-    sns.boxplot(
-        data=df, 
-        x="Severity Class", 
-        y="Value", 
-        hue="Source", 
-        order=cls_order,
-        ax=ax,
-        palette=palette,
-        showfliers=False,
-        width=0.5
-    )
-    
-    ax.set_title(f"{metric_name} Distribution: Ground Truth vs Generated", fontsize=15, fontweight='bold')
-    ax.set_ylabel("Symmetry Index (%)", fontsize=12)
-    ax.set_xlabel("")
-    ax.tick_params(axis='x', labelsize=11)
-
-    # Plot textual distance balloons if distances_df is provided
-    if distances_df is not None:
-        y_min_auto, y_max_auto = ax.get_ylim()
-        y_range = max(y_max_auto - y_min_auto, 1e-5)
-        
-        ax.set_ylim(y_min_auto, y_max_auto + (y_range * 0.20))
-
-        x_ticks = [l.get_text() for l in ax.get_xticklabels()]
-        for x_idx, label_text in enumerate(x_ticks):
-            match = distances_df[(distances_df['Severity'] == label_text) & (distances_df['Metric'] == metric_name)]
-            if not match.empty:
-                ks = match.iloc[0]['KS_Stat']
-                w = match.iloc[0]['Wasserstein']
-                
-                ax.text(x_idx, y_max_auto + (y_range * 0.05), f"K: {ks:.2f}\nW: {w:.2f}",
-                        ha='center', va='bottom', fontsize=10, fontweight='bold',
-                        bbox=dict(facecolor=get_color(ks), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
-
-    ax.legend(title="Data Source", fontsize=11, title_fontsize=12, loc="upper right")
-
-    plt.tight_layout()
-    arm_plot_path = out_dir / "03c_smpl_arm_swing_distributions.png"
-    plt.savefig(arm_plot_path, dpi=300)
-    plt.close()
-    print(f"Saved Arm Swing distributions plot to: {arm_plot_path}")
-
-
-def plot_sparc_metrics(data, output_dir, distances_df=None):
-    """Plots full side-by-side distributions for SPARC smoothness metrics with optional distance balloons."""
-    if isinstance(data, (str, Path)):
-        with open(data, 'r') as f:
-            data = json.load(f)
-            
-    raw_dist = data.get("raw_distributions", {})
-    if not raw_dist or "Overall" not in raw_dist or "GT_SPARC_Overall" not in raw_dist["Overall"]:
-        print("No SPARC metrics found in JSON. Skipping SPARC plots.")
-        return
-
-    sns.set_theme(style="whitegrid")
-    out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    def get_color(score):
-        if score < 0.10: return '#85e085' # Green
-        if score < 0.20: return '#ffe680' # Yellow
-        if score < 0.40: return '#ffb366' # Orange
-        return '#ff6666' # Red
-    
-    palette = {"Ground Truth": "lightsteelblue", "Generated": "lightcoral"}
-
-    # ---------------------------------------------------------
-    # KNEE JOINTS FOR SEVERITY CLASS PROGRESSION
-    # ---------------------------------------------------------
-    knee_joints = ['L_Knee', 'R_Knee']
-    knee_records = []
-    
-    for cls_key, metrics_dict in raw_dist.items():
-        if cls_key == "Overall":
+        if not records:
             continue
-        for j_name in knee_joints:
-            for val in metrics_dict.get(f"GT_SPARC_{j_name}", []):
-                knee_records.append({"Severity Class": cls_key, "Joint": j_name, "Source": "Ground Truth", "SPARC": val})
-            for val in metrics_dict.get(f"Gen_SPARC_{j_name}", []):
-                knee_records.append({"Severity Class": cls_key, "Joint": j_name, "Source": "Generated", "SPARC": val})
-                
-    if knee_records:
-        df_knees = pd.DataFrame(knee_records)
-        cls_order = sorted(df_knees["Severity Class"].unique())
-        
-        fig, axes = plt.subplots(1, 2, figsize=(15, 6))
-        
-        for idx, j_name in enumerate(knee_joints):
-            ax = axes[idx]
-            df_joint = df_knees[df_knees["Joint"] == j_name]
-            
-            sns.boxplot(
-                data=df_joint, 
-                x="Severity Class", 
-                y="SPARC", 
-                hue="Source", 
-                palette=palette,
-                order=cls_order,
-                ax=ax,
-                showfliers=True
-            )
-            
-            ax.set_title(f"{j_name} Joint", fontsize=14, fontweight='bold', pad=10)
-            ax.set_ylabel("SPARC Value (Higher = Smoother)", fontsize=12)
-            ax.set_xlabel("")
-            ax.tick_params(axis='x', labelsize=11)
-            
-            # Add distance balloons dynamically scaled to plot
-            if distances_df is not None:
-                y_max = df_joint["SPARC"].max()
-                y_min = df_joint["SPARC"].min()
-                y_range = max(y_max - y_min, 1e-5)
-                
-                # Pad top by 25% and bottom by 5% to ensure balloons and fliers fit
-                ax.set_ylim(y_min - (y_range * 0.05), y_max + (y_range * 0.25))
-                
-                x_ticks = [l.get_text() for l in ax.get_xticklabels()]
-                for x_idx, label_text in enumerate(x_ticks):
-                    match = distances_df[(distances_df['Severity'] == label_text) & (distances_df['Metric'] == 'SPARC_Knees')]
-                    if not match.empty:
-                        ks = match.iloc[0]['KS_Stat']
-                        w = match.iloc[0]['Wasserstein']
-                        ax.text(x_idx, y_max + (y_range * 0.05), f"K: {ks:.2f}\nW: {w:.2f}",
-                                ha='center', va='bottom', fontsize=10, fontweight='bold',
-                                bbox=dict(facecolor=get_color(ks), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
-            
-            if idx == 0:
-                ax.get_legend().remove()
-            else:
-                ax.legend(title="Data Source", fontsize=11, title_fontsize=12, 
-                          bbox_to_anchor=(1.03, 0.5), loc='center left', borderaxespad=0.)
 
-        fig.suptitle("SPARC Smoothness in Knees per Severity Class", 
-                     fontsize=16, fontweight='bold', y=1.02)
-        
-        plt.tight_layout()
-        knee_plot_path = out_dir / "03f_sparc_knee_class_discriminators.png"
-        plt.savefig(knee_plot_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        print(f"Saved independent Knee Discriminators box plots to: {knee_plot_path}")
+        df_metric = pd.DataFrame(records)
+        cls_order = ["Overall"] + sorted([c for c in df_metric["Severity Class"].unique() if c != "Overall"])
 
-    # --------------------------------------------
-    # BROAD CATEGORIES & SEVERITY CLASSES FOR SPARC
-    # --------------------------------------------
-    categories = [
-        'Overall', 'Lower Body', 'Upper Body', 'Hips', 
-        'Knees', 'Ankles', 'Shoulders', 
-        'Left Body', 'Right Body'
-    ]
-    
-    cat_records = []
-    for cls_key, metrics_dict in raw_dist.items():
-        for cat_name in categories:
-            for val in metrics_dict.get(f"GT_SPARC_{cat_name}", []):
-                cat_records.append({"Severity Class": cls_key, "Category": cat_name, "Source": "Ground Truth", "SPARC": val})
-            for val in metrics_dict.get(f"Gen_SPARC_{cat_name}", []):
-                cat_records.append({"Severity Class": cls_key, "Category": cat_name, "Source": "Generated", "SPARC": val})
+        fig, ax = plt.subplots(figsize=(8.5, 6))
 
-    if cat_records:
-        df_cat = pd.DataFrame(cat_records)
-        fig, axes = plt.subplots(1, 2, figsize=(18, 6))
-
-        # Left Panel (Boxplot)
-        df_cat_overall = df_cat[df_cat["Severity Class"] == "Overall"]
         sns.boxplot(
-            data=df_cat_overall, 
-            x="Category", 
-            y="SPARC", 
-            hue="Source",
-            ax=axes[0], 
-            order=categories,
-            palette=palette,
-            showfliers=False,
-            width=0.5
+            data=df_metric, x="Severity Class", y="Value", hue="Source",
+            order=cls_order, palette=palette, showfliers=show_outliers,
+            width=0.5, ax=ax
         )
-        axes[0].set_title("SPARC Smoothness by Body Region (Overall Dataset)", fontsize=13, fontweight='bold')
-        axes[0].set_ylabel("SPARC Value (Higher = Smoother)")
-        axes[0].set_xlabel("")
-        axes[0].tick_params(axis='x', rotation=30)
 
+        ax.set_title(
+            f"{metric_name} (Ground Truth vs. Generated)\n[{spec['clinical_note']}]", 
+            fontsize=13, 
+            fontweight='bold', 
+            pad=25
+        )
+        ax.set_ylabel(spec["ylabel"], fontsize=11)
+        ax.set_xlabel("Clinical Severity Class", fontsize=11)
+        ax.grid(axis='y', linestyle='--', alpha=0.5)
+
+        # Plot distance badges if available
         if distances_df is not None:
-            y_max = df_cat_overall["SPARC"].max()
-            y_min = df_cat_overall["SPARC"].min()
-            y_range = max(y_max - y_min, 1e-5)
-            axes[0].set_ylim(y_min - (y_range * 0.05), y_max + (y_range * 0.35))
+            y_min_auto, y_max_auto = ax.get_ylim()
+            y_range = max(y_max_auto - y_min_auto, 1e-5)
+            ax.set_ylim(y_min_auto - (y_range * 0.05), y_max_auto + (y_range * 0.30))
 
-            x_ticks = [l.get_text() for l in axes[0].get_xticklabels()]
+            x_ticks = [l.get_text() for l in ax.get_xticklabels()]
             for x_idx, label_text in enumerate(x_ticks):
-                match = distances_df[(distances_df['Severity'] == 'Overall') & (distances_df['Metric'] == f'SPARC_{label_text}')]
+                match = distances_df[(distances_df['Severity'] == label_text) & (distances_df['Metric'] == metric_name)]
                 if not match.empty:
                     ks = match.iloc[0]['KS_Stat']
                     w = match.iloc[0]['Wasserstein']
-                    
-                    axes[0].text(x_idx, y_max + (y_range * 0.15), f"K: {ks:.2f}\nW: {w:.2f}",
-                            ha='center', va='bottom', fontsize=10, fontweight='bold',
-                            bbox=dict(facecolor=get_color(ks), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
+                    ax.text(
+                        x_idx, y_max_auto + (y_range * 0.10), f"K: {ks:.2f}\nW: {w:.2f}",
+                        ha='center', va='bottom', fontsize=10, fontweight='bold',
+                        bbox=dict(facecolor=get_color(ks), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9)
+                    )
 
-        axes[0].legend(title="Data Source", loc="lower right")
+        ax.legend(title="Data Source", loc="upper right")
+        plt.tight_layout()
+        save_path = out_dir / spec["filename"]
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"Saved {metric_name} plot to: {save_path}")
 
-        # Right Panel: Primary Walking Joints across clinical severity classes (Boxplot)
-        target_joints = ['L_Hip', 'R_Hip', 'L_Knee', 'R_Knee', 'L_Ankle', 'R_Ankle']
-        leg_records = []
-        
-        for cls_key, metrics_dict in raw_dist.items():
-            if cls_key == "Overall":
+# optional plotting of the frequency spectra for bradykinesia and smoothness metrics
+def plot_clinical_spectra(gt_npz_path, gen_npz_path, labels_path, output_dir, fps: int = 30, nfft: int = 2048):
+    """Generates overlaid Ground Truth vs. Generated spectral profile comparisons."""
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(labels_path, 'r') as f:
+        labels_dict = json.load(f)["key_to_severity"]
+
+    gt_data = np.load(gt_npz_path, allow_pickle=True)
+    gen_data = np.load(gen_npz_path, allow_pickle=True)
+    gt_dict = gt_data['arr_0'].item() if 'arr_0' in gt_data.files else {k: gt_data[k] for k in gt_data.files}
+    gen_dict = gen_data['arr_0'].item() if 'arr_0' in gen_data.files else {k: gen_data[k] for k in gen_data.files}
+
+    RAD2DEG = 180.0 / np.pi
+    f = np.fft.rfftfreq(nfft, d=1.0 / fps)
+    colors = ['#85e085', '#ffe680', '#ffb366', '#ff6666']
+    classes = [0, 1, 2, 3]
+    valid_f = (f >= 0.0) & (f <= 8.0)
+    common_keys = [k for k in gt_dict.keys() if k in gen_dict.keys() and not k.endswith('_trans')]
+
+    def _compute_angular_speed(pose_seq):
+        rot_mats = pose_to_rmat(pose_seq)
+        if hasattr(rot_mats, "numpy"):
+            rot_mats = rot_mats.numpy()
+        T, J, _, _ = rot_mats.shape
+        R_rel = np.matmul(np.swapaxes(rot_mats[:-1], -1, -2), rot_mats[1:])
+        rotvecs = Rotation.from_matrix(R_rel.reshape(-1, 3, 3)).as_rotvec().reshape(T - 1, J, 3)
+        return np.linalg.norm(rotvecs * fps, axis=-1)
+
+    gt_spectra = {"ankle": {c: [] for c in classes}, "spine": {c: [] for c in classes},
+                  "wrist": {c: [] for c in classes}, "hand": {c: [] for c in classes}}
+    gen_spectra = {"ankle": {c: [] for c in classes}, "spine": {c: [] for c in classes},
+                   "wrist": {c: [] for c in classes}, "hand": {c: [] for c in classes}}
+
+    for k in common_keys:
+        sev = labels_dict.get(k, -1)
+        if sev not in classes:
+            continue
+
+        gt_a_t = _compute_angular_speed(gt_dict[k])
+        gen_a_t = _compute_angular_speed(gen_dict[k])
+
+        for data_source, a_t, target_dict in [("GT", gt_a_t, gt_spectra), ("Gen", gen_a_t, gen_spectra)]:
+            T = a_t.shape[0]
+            if T < 2:
                 continue
-            for j_name in target_joints:
-                for val in metrics_dict.get(f"GT_SPARC_{j_name}", []):
-                    leg_records.append({"Severity Class": cls_key, "Source": "Ground Truth", "SPARC": val})
-                for val in metrics_dict.get(f"Gen_SPARC_{j_name}", []):
-                    leg_records.append({"Severity Class": cls_key, "Source": "Generated", "SPARC": val})
 
-        df_legs = pd.DataFrame(leg_records)
-        cls_order = sorted(df_legs["Severity Class"].unique())
-        
-        sns.boxplot(
-            data=df_legs, 
-            x="Severity Class", 
-            y="SPARC", 
-            hue="Source", 
-            ax=axes[1],
-            order=cls_order, 
-            palette=palette,
-            showfliers=False,
-            width=0.5
-        )
-        axes[1].set_title("Primary Walking Joints (Hips/Knees/Ankles) Across Severity", fontsize=13, fontweight='bold')
-        axes[1].set_ylabel("SPARC Value (Higher = Smoother)")
-        axes[1].set_xlabel("")
-        axes[1].tick_params(axis='x', rotation=30)
-        
-        # Add Text Balloons for SPARC Distances
-        if distances_df is not None:
-            y_max = df_legs["SPARC"].max()
-            y_min = df_legs["SPARC"].min()
-            y_range = max(y_max - y_min, 1e-5)
-            axes[1].set_ylim(y_min - (y_range * 0.05), y_max + (y_range * 0.35))
+            a_phys = {}
+            psd_norm = {}
+            for j in [6, 7, 8, 9, 20, 21, 22, 23]:
+                sig = a_t[:, j] - np.mean(a_t[:, j])
+                A_raw = np.abs(np.fft.rfft(sig, n=nfft))
+                a_phys[j] = (2.0 / T) * A_raw * RAD2DEG
+                psd_raw = (A_raw ** 2) / nfft
+                psd_norm[j] = psd_raw / (np.sum(psd_raw) + 1e-8)
 
-            x_ticks = [l.get_text() for l in axes[1].get_xticklabels()]
-            for x_idx, label_text in enumerate(x_ticks):
-                match = distances_df[(distances_df['Severity'] == label_text) & (distances_df['Metric'] == 'SPARC_Lower_Limbs')]
-                if not match.empty:
-                    ks = match.iloc[0]['KS_Stat']
-                    w = match.iloc[0]['Wasserstein']
-                    
-                    axes[1].text(x_idx, y_max + (y_range * 0.15), f"K: {ks:.2f}\nW: {w:.2f}",
-                            ha='center', va='bottom', fontsize=10, fontweight='bold',
-                            bbox=dict(facecolor=get_color(ks), edgecolor='black', boxstyle='round,pad=0.3', alpha=0.9))
+            # Worse ankle (Joints 7 & 8)
+            auc_l = np.sum(a_phys[7][valid_f])
+            auc_r = np.sum(a_phys[8][valid_f])
+            target_dict["ankle"][sev].append(a_phys[7] if auc_l <= auc_r else a_phys[8])
 
-        axes[1].legend(title="Data Source", loc="lower right")
+            # Axial spine (Joints 6 & 9)
+            target_dict["spine"][sev].append(0.5 * (a_phys[6] + a_phys[9]))
 
+            # Worse wrist (Joints 20 & 21)
+            jit_l = np.sum(psd_norm[20][valid_f])
+            jit_r = np.sum(psd_norm[21][valid_f])
+            target_dict["wrist"][sev].append(psd_norm[20] if jit_l >= jit_r else psd_norm[21])
+
+            # Worse hand (Joints 22 & 23)
+            jit_lh = np.sum(psd_norm[22][valid_f])
+            jit_rh = np.sum(psd_norm[23][valid_f])
+            target_dict["hand"][sev].append(psd_norm[22] if jit_lh >= jit_rh else psd_norm[23])
+
+    def _render_spectrum_comparison(gt_curves, gen_curves, title, ylabel, save_filename):
+        plt.figure(figsize=(10.5, 5.5))
+        for c in classes:
+            if len(gt_curves[c]) > 0:
+                plt.plot(f[valid_f], np.mean(gt_curves[c], axis=0)[valid_f], color=colors[c],
+                         linestyle='-', linewidth=2.0, label=f'Class {c} (GT)')
+            if len(gen_curves[c]) > 0:
+                plt.plot(f[valid_f], np.mean(gen_curves[c], axis=0)[valid_f], color=colors[c],
+                         linestyle='--', linewidth=1.8, label=f'Class {c} (Gen)')
+
+        plt.axvspan(0.5, 3.0, color='green', alpha=0.08, label='Voluntary Locomotion (0.5–3.0 Hz)')
+        plt.axvspan(3.0, 8.0, color='red', alpha=0.08, label='Jitter Band (3.0–8.0 Hz)')
+        plt.title(title, fontweight='bold', fontsize=12)
+        plt.xlabel("Frequency (Hz)")
+        plt.ylabel(ylabel)
+        plt.legend(loc="upper right", fontsize=8.5, ncol=2)
+        plt.grid(True, alpha=0.3)
         plt.tight_layout()
-        sparc_cat_plot_path = out_dir / "03d_sparc_categories.png"
-        plt.savefig(sparc_cat_plot_path, dpi=300)
+        plt.savefig(out_dir / save_filename, dpi=300)
         plt.close()
-        print(f"Saved SPARC Category breakdown plot to: {sparc_cat_plot_path}")
+        print(f"Saved spectrum plot to: {out_dir / save_filename}")
 
-    # -----------------------------
-    # 24 INDIVIDUAL JOINTS FOR SPARC
-    # -----------------------------
-    all_joints = [
-        'Pelvis', 'L_Hip', 'R_Hip', 'Spine1', 'L_Knee', 'R_Knee',
-        'Spine2', 'L_Ankle', 'R_Ankle', 'Spine3', 'L_Foot', 'R_Foot',
-        'Neck', 'L_Collar', 'R_Collar', 'Head', 'L_Shoulder', 'R_Shoulder',
-        'L_Elbow', 'R_Elbow', 'L_Wrist', 'R_Wrist', 'L_Hand', 'R_Hand'
-    ]
-    
-    joint_records = []
-    overall_metrics = raw_dist.get("Overall", {})
-    for joint_name in all_joints:
-        for val in overall_metrics.get(f"GT_SPARC_{joint_name}", []):
-            joint_records.append({"Joint": joint_name, "Source": "Ground Truth", "SPARC": val})
-        for val in overall_metrics.get(f"Gen_SPARC_{joint_name}", []):
-            joint_records.append({"Joint": joint_name, "Source": "Generated", "SPARC": val})
-            
-    if joint_records:
-        df_joints = pd.DataFrame(joint_records)
-
-        gt_only = df_joints[df_joints["Source"] == "Ground Truth"]
-        joint_order = gt_only.groupby("Joint")["SPARC"].median().sort_values(ascending=True).index
-
-        plt.figure(figsize=(12, 10))
-        sns.boxplot(
-            data=df_joints, 
-            y="Joint", 
-            x="SPARC", 
-            hue="Source",
-            order=joint_order,
-            palette=palette, 
-            showfliers=False
-        )
-
-        plt.title("SPARC Smoothness across all 24 SMPL Joints (Ordered by GT smoothness)", fontsize=14, fontweight='bold', pad=12)
-        plt.xlabel("SPARC Value (Higher = Smoother)")
-        plt.ylabel("")
-        plt.legend(title="Data Source", loc="lower right")
-        plt.grid(axis='x', linestyle='--', alpha=0.6)
-
-        plt.tight_layout()
-        sparc_joint_plot_path = out_dir / "03e_sparc_all_24_joints.png"
-        plt.savefig(sparc_joint_plot_path, dpi=300)
-        plt.close()
-        print(f"Saved 24-Joint SPARC breakdown plot to: {sparc_joint_plot_path}")
+    _render_spectrum_comparison(
+        gt_spectra["ankle"], gen_spectra["ankle"],
+        "Bradykinesia Harmonic Profile: Worse Ankle (GT vs. Gen)\n[Physical Amplitude Spectrum: deg/s]",
+        "Harmonic Amplitude (deg/s)", "smpl_spectrum_worse_ankle_bradykinesia_comparison.png"
+    )
+    _render_spectrum_comparison(
+        gt_spectra["spine"], gen_spectra["spine"],
+        "Axial Rigidity Profile: Trunk Spine (GT vs. Gen)\n[Physical Amplitude Spectrum: deg/s]",
+        "Harmonic Amplitude (deg/s)", "smpl_spectrum_axial_spine_rigidity_comparison.png"
+    )
+    _render_spectrum_comparison(
+        gt_spectra["wrist"], gen_spectra["wrist"],
+        "Smoothness Degradation: Worse Wrist (GT vs. Gen)\n[Relative Energy Distribution]",
+        "Fractional Power / Bin", "smpl_spectrum_worse_wrist_smoothness_comparison.png"
+    )
+    _render_spectrum_comparison(
+        gt_spectra["hand"], gen_spectra["hand"],
+        "Smoothness Degradation: Worse Hand (GT vs. Gen)\n[Relative Energy Distribution]",
+        "Fractional Power / Bin", "smpl_spectrum_worse_hand_smoothness_comparison.png"
+    )
 
 
 if __name__ == "__main__":
     model_folder = "JointModel-MLP-Baseline"
     base_dir = f"thesis/data/processed/{model_folder}/evaluation"
-    
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--smpl", type=str, 
-        default=f"{base_dir}/smpl_evaluation.json",
-    )
-    parser.add_argument(
-        "-o", "--output", type=str, 
-        default=f"thesis/visualizations/{model_folder}",
-    )
-    parser.add_argument(
-        "--hide_distances", action="store_true", 
-        help="Flag to disable the KS & Wasserstein distance balloons in the plots."
-    )
+
+    parser = argparse.ArgumentParser(description="Visualize SMPL evaluation distributions.")
+    parser.add_argument("--smpl", type=str, default=f"{base_dir}/smpl_evaluation.json")
+    parser.add_argument("-o", "--output", type=str, default=f"thesis/visualizations/{model_folder}")
+    parser.add_argument("--hide_distances", action="store_true", help="Disable KS & Wasserstein distance balloons.")
+    parser.add_argument("--show_outliers", action="store_true", help="Show flier points on box plots.")
+    parser.add_argument("--plot_spectra", action="store_true", help="Render physical and relative spectral curves (off by default).")
+    parser.add_argument("--gt_npz", type=str, default=None, help="Path to ground_truth_6d.npz (required if --plot_spectra is set).")
+    parser.add_argument("--gen_npz", type=str, default=None, help="Path to generated_6d.npz (required if --plot_spectra is set).")
+    parser.add_argument("--labels", type=str, default=None, help="Path to gen_labels.json (required if --plot_spectra is set).")
     args = parser.parse_args()
 
     smpl_path = Path(args.smpl)
     output_dir = Path(args.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     if not smpl_path.exists():
         print(f"Error: Could not find SMPL evaluation JSON at: {smpl_path}")
-    else:
-        print(f"Loading cached SMPL evaluation data from: {smpl_path}")
-        
-        distances_df = None
-        if not args.hide_distances:
-            print("Computing KS & Wasserstein Distances for SMPL Metrics...")
-            with open(smpl_path, 'r') as f:
-                data_json = json.load(f)
-            
-            raw_dist = data_json.get("raw_distributions", {})
-            gt_comp = defaultdict(dict)
-            gen_comp = defaultdict(dict)
-            target_sparc_joints = ['L_Hip', 'R_Hip', 'L_Knee', 'R_Knee', 'L_Ankle', 'R_Ankle']
+        exit(1)
 
-            for sev_key, metrics in raw_dist.items():
-                # Map "Overall" to "overall" and "Class X" to "X" to match the H36M Comparator structure
-                c_key = "overall" if sev_key == "Overall" else sev_key.replace("Class ", "")
-                
-                # Arm Swing
-                gt_comp[c_key]["Left Arm ROM"] = np.array(np.degrees(metrics.get("GT_ROM_L", [])))
-                gen_comp[c_key]["Left Arm ROM"] = np.array(np.degrees(metrics.get("Gen_ROM_L", [])))
-                
-                gt_comp[c_key]["Right Arm ROM"] = np.array(np.degrees(metrics.get("GT_ROM_R", [])))
-                gen_comp[c_key]["Right Arm ROM"] = np.array(np.degrees(metrics.get("Gen_ROM_R", [])))
-                
-                gt_comp[c_key]["Swing Asymmetry (SI)"] = np.array(metrics.get("GT_Symmetry_Index", []))
-                gen_comp[c_key]["Swing Asymmetry (SI)"] = np.array(metrics.get("Gen_Symmetry_Index", []))
-                
-                # SPARC Lower Limbs (Pooled)
-                gt_legs = []
-                gen_legs = []
-                for j in target_sparc_joints:
-                    gt_legs.extend(metrics.get(f"GT_SPARC_{j}", []))
-                    gen_legs.extend(metrics.get(f"Gen_SPARC_{j}", []))
-                gt_comp[c_key]["SPARC_Lower_Limbs"] = np.array(gt_legs)
-                gen_comp[c_key]["SPARC_Lower_Limbs"] = np.array(gen_legs)
+    print(f"Loading cached SMPL evaluation data from: {smpl_path}")
+    with open(smpl_path, 'r') as f:
+        data_json = json.load(f)
 
-            # Generate dataframe containing distances
-            comparator = DistributionComparator()
-            results = comparator.compare(gt_comp, gen_comp)
-            distances_df = comparator._format_results_to_dataframe(results)
+    distances_df = None
+    if not args.hide_distances:
+        print("Computing KS & Wasserstein Distances for SMPL Clinical Metrics...")
+        raw_dist = data_json.get("raw_distributions", {})
+        gt_comp = defaultdict(dict)
+        gen_comp = defaultdict(dict)
 
-        plot_smpl_mpjae(smpl_path, output_dir)
-        plot_arm_swing_metrics(smpl_path, output_dir, distances_df=distances_df)
-        plot_sparc_metrics(smpl_path, output_dir, distances_df=distances_df)
-        print(f"\nSuccessfully generated SMPL plots in: {output_dir}")
+        for sev_key, metrics in raw_dist.items():
+            c_key = "overall" if sev_key.lower() == "overall" else sev_key.replace("Class ", "")
+            for spec in CLINICAL_METRICS_SPECS:
+                m_name = spec["name"]
+                gt_k = spec["gt_key"]
+                gen_k = spec["gen_key"]
+                if gt_k in metrics and gen_k in metrics:
+                    gt_comp[c_key][m_name] = np.array(metrics[gt_k])
+                    gen_comp[c_key][m_name] = np.array(metrics[gen_k])
+
+        comparator = DistributionComparator()
+        results = comparator.compare(gt_comp, gen_comp)
+        distances_df = comparator._format_results_to_dataframe(results)
+
+    # Render standardized plots
+    plot_smpl_mpjae(smpl_path, output_dir)
+    plot_clinical_metric_distributions(smpl_path, output_dir, distances_df=distances_df, show_outliers=args.show_outliers)
+
+    # Optional spectra plotting
+    if args.plot_spectra:
+        gt_npz = Path(args.gt_npz) if args.gt_npz else smpl_path.parent.parent / "6D_SMPL" / "ground_truth_6d.npz"
+        gen_npz = Path(args.gen_npz) if args.gen_npz else smpl_path.parent.parent / "6D_SMPL" / "generated_6d.npz"
+        lbls = Path(args.labels) if args.labels else smpl_path.parent.parent / "h36m" / "gen_labels.json"
+
+        if gt_npz.exists() and gen_npz.exists() and lbls.exists():
+            print("Rendering optional clinical harmonic spectra...")
+            plot_clinical_spectra(gt_npz, gen_npz, lbls, output_dir)
+        else:
+            print("Could not locate npz datasets for spectra plotting. Pass --gt_npz, --gen_npz, and --labels.")
+
+    print(f"\nAll SMPL visuals successfully updated in: {output_dir}\n")

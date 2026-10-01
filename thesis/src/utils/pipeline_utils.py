@@ -21,7 +21,8 @@ from thesis.src.utils.visualize_metrics.visualize_h36m_metric_dist import (
     prepare_dataframe, prepare_combined_dataframe
 )
 from thesis.src.utils.visualize_metrics.visualize_smpl_metric_dist import (
-    plot_smpl_mpjae, plot_arm_swing_metrics, plot_sparc_metrics
+    plot_smpl_mpjae, 
+    plot_clinical_metric_distributions
 )
 
 
@@ -228,54 +229,34 @@ def evaluate_and_plot_distributions(memory_data, min_z_travel=0.5, is_joint_mode
     h36m_dist_df = comparator._format_results_to_dataframe(comparator.compare(gt_h36m_data, gen_h36m_data))
 
     gt_comp, gen_comp = defaultdict(dict), defaultdict(dict)
-    
-    # Define aggregation targets for the text balloons
-    target_sparc_joints = ['L_Hip', 'R_Hip', 'L_Knee', 'R_Knee', 'L_Ankle', 'R_Ankle']
-    categories = [
-        'Overall', 'Lower Body', 'Upper Body', 'Hips', 
-        'Knees', 'Ankles', 'Shoulders', 'Left Body', 'Right Body'
+
+    clinical_metrics_map = [
+        ("Ankle Bradykinesia", "GT_Ankle_Bradykinesia", "Gen_Ankle_Bradykinesia"),
+        ("Spine Rigidity", "GT_Spine_Rigidity", "Gen_Spine_Rigidity"),
+        ("Ankle SI", "GT_Ankle_SI", "Gen_Ankle_SI"),
+        ("Wrist Smoothness AUC", "GT_Wrist_Smoothness_AUC", "Gen_Wrist_Smoothness_AUC"),
+        ("Hand Smoothness AUC", "GT_Hand_Smoothness_AUC", "Gen_Hand_Smoothness_AUC"),
     ]
-    
+
     for sev_key, metrics in smpl_cache_data.get("raw_distributions", {}).items():
         c_key = "overall" if sev_key == "Overall" else sev_key.replace("Class ", "")
-        
-        # Arm Swing
-        gt_comp[c_key]["Swing Asymmetry (SI)"] = np.array(metrics.get("GT_Symmetry_Index", []))
-        gen_comp[c_key]["Swing Asymmetry (SI)"] = np.array(metrics.get("Gen_Symmetry_Index", []))
-        
-        # Standalone Knees
-        gt_knees, gen_knees = [], []
-        for j in ['L_Knee', 'R_Knee']:
-            gt_knees.extend(metrics.get(f"GT_SPARC_{j}", []))
-            gen_knees.extend(metrics.get(f"Gen_SPARC_{j}", []))
-        gt_comp[c_key]["SPARC_Knees"] = np.array(gt_knees)
-        gen_comp[c_key]["SPARC_Knees"] = np.array(gen_knees)
-        
-        # Lower Limbs Pooled
-        gt_legs, gen_legs = [], []
-        for j in target_sparc_joints:
-            gt_legs.extend(metrics.get(f"GT_SPARC_{j}", []))
-            gen_legs.extend(metrics.get(f"Gen_SPARC_{j}", []))
-        gt_comp[c_key]["SPARC_Lower_Limbs"] = np.array(gt_legs)
-        gen_comp[c_key]["SPARC_Lower_Limbs"] = np.array(gen_legs)
+        for display_name, gt_key, gen_key in clinical_metrics_map:
+            if gt_key in metrics and gen_key in metrics:
+                gt_comp[c_key][display_name] = np.array(metrics[gt_key])
+                gen_comp[c_key][display_name] = np.array(metrics[gen_key])
 
-        # Broad Categories
-        for cat in categories:
-            gt_comp[c_key][f"SPARC_{cat}"] = np.array(metrics.get(f"GT_SPARC_{cat}", []))
-            gen_comp[c_key][f"SPARC_{cat}"] = np.array(metrics.get(f"Gen_SPARC_{cat}", []))
-        
     smpl_dist_df = comparator._format_results_to_dataframe(comparator.compare(gt_comp, gen_comp))
 
-    # Plotting
+    # Plot h36m metrics
     plot_dataset_summary_stats(prepare_dataframe(gt_h36m_data), vis_out_dir, prefix="gt_", dataset_label="Ground Truth Baseline")
     plot_pd_feature_violins(prepare_dataframe(gt_h36m_data), vis_out_dir, prefix="gt_", dataset_label="Ground Truth Baseline")
     plot_dataset_summary_stats(prepare_dataframe(gen_h36m_data), vis_out_dir, prefix="gen_", dataset_label=step_name)
     plot_pd_feature_violins(prepare_dataframe(gen_h36m_data), vis_out_dir, prefix="gen_", dataset_label=step_name)
     plot_pd_feature_comparison_plots(prepare_combined_dataframe(gt_h36m_data, gen_h36m_data), h36m_dist_df, vis_out_dir)
-    
+
+    # Plot smpl metrics
     plot_smpl_mpjae(smpl_cache_data, vis_out_dir)
-    plot_arm_swing_metrics(smpl_cache_data, vis_out_dir, distances_df=smpl_dist_df)
-    plot_sparc_metrics(smpl_cache_data, vis_out_dir, distances_df=smpl_dist_df)
+    plot_clinical_metric_distributions(smpl_cache_data, vis_out_dir, distances_df=smpl_dist_df)
 
     if is_joint_model:
         y_true = [v for k, v in memory_data["gt_key_to_severity"].items() if k.startswith("seq_")]

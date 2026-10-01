@@ -238,7 +238,7 @@ class WandBEvaluationCallback(Callback):
 
         # Log visualizations to W&B 
         for p, sev in zip(gif_paths, self.anchors.keys()):
-            wandb_logs[f"eval_videos/anchor_class_{sev}"] = wandb.Image(
+            wandb_logs[f"eval_visuals/anchor_class_{sev}"] = wandb.Image(
                 str(p.resolve()),
                 caption=f"Severity Class {sev} (Epoch {display_epoch})"
             )
