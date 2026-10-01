@@ -121,28 +121,28 @@ if __name__ == "__main__":
         else:
             best_model = model.to(device)
         
-        data_dict = generate_trajectories(
+        synthetic_data = generate_trajectories(
             model=best_model, dataloader=test_loader, num_steps=cfg['sampling']['num_steps'], 
             device=device, max_batches=-1, desc="Generating Final Test Set", is_joint_model=is_joint_model,
         )
 
         if is_joint_model:
-            gt_sevs = np.array(data_dict["severities"])
-            gen_sevs = np.array(data_dict["gen_severities"])
+            gt_sevs = np.array(synthetic_data["severities"])
+            gen_sevs = np.array(synthetic_data["gen_severities"])
             test_label_acc = np.mean(gt_sevs == gen_sevs)
             print(f"Final Test Label Accuracy: {test_label_acc:.4f} ({np.sum(gt_sevs == gen_sevs)}/{len(gt_sevs)} matches)")
         
         print("\n--- PHASE 3: FINAL TEST EVALUATION & DISK STORAGE ---")
-        memory_data = format_and_convert(data_dict, cfg, is_joint_model=is_joint_model, save_to_disk=True)
+        synthetic_data_converted = format_and_convert(synthetic_data, cfg, is_joint_model=is_joint_model, save_to_disk=True)
         dist_metrics, vis_dir = evaluate_and_plot_distributions(
-            memory_data, 
+            synthetic_data_converted, 
             min_z_travel=min_z_travel, 
             is_joint_model=is_joint_model, 
             step_name="Final Test"
         )
 
         smpl_evaluator = SMPLEvaluator()
-        mpjae_rad = smpl_evaluator.compute_mpjae(data_dict["gt"]["pose"], data_dict["gen"]["pose"])
+        mpjae_rad = smpl_evaluator.compute_mpjae(synthetic_data["gt"]["pose"], synthetic_data["gen"]["pose"])
         dist_metrics["test_metrics/Overall_MPJAE_deg"] = mpjae_rad * (180.0 / np.pi)
         dist_metrics["test_metrics/label_accuracy"] = test_label_acc
 
