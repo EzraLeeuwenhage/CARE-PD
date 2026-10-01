@@ -1261,7 +1261,8 @@ def analyze_q6_clinical_metrics_upgraded(
     labels_dict,
     out_dir=None,
     fps: int = 30,
-    nfft: int = 2048
+    nfft: int = 2048,
+    show_outliers: bool = False
 ):
     print("\n" + "=" * 115)
     print("UPGRADED Q6: CONDENSED CLINICAL METRICS (WORSE-SIDE + BILATERAL ASYMMETRY)")
@@ -1359,16 +1360,21 @@ def analyze_q6_clinical_metrics_upgraded(
         # -------------------------------------------------------------
         # 2. SMOOTHNESS / TREMOR: Relative Jitter AUC (3.0 - 8.0 Hz) in %
         # -------------------------------------------------------------
+        def _calc_jitter_pct_trapz(psd_signal):
+            jitter_area = trapz_fn(psd_signal[mask_jitter], f[mask_jitter])
+            total_area = trapz_fn(psd_signal, f) + 1e-8
+            return float(jitter_area / total_area) * 100.0
+
         # Wrists (L=20, R=21)
-        jit_l_wri = float(np.sum(psd_norm_all[20][mask_jitter])) * 100.0
-        jit_r_wri = float(np.sum(psd_norm_all[21][mask_jitter])) * 100.0
+        jit_l_wri = _calc_jitter_pct_trapz(psd_norm_all[20])
+        jit_r_wri = _calc_jitter_pct_trapz(psd_norm_all[21])
         worse_wri_jit = max(jit_l_wri, jit_r_wri)
         worse_wri_spec = psd_norm_all[20] if jit_l_wri >= jit_r_wri else psd_norm_all[21]
         worse_spectra["wrist"][sev].append(worse_wri_spec)
 
         # Hands (L=22, R=23)
-        jit_l_hnd = float(np.sum(psd_norm_all[22][mask_jitter])) * 100.0
-        jit_r_hnd = float(np.sum(psd_norm_all[23][mask_jitter])) * 100.0
+        jit_l_hnd = _calc_jitter_pct_trapz(psd_norm_all[22])
+        jit_r_hnd = _calc_jitter_pct_trapz(psd_norm_all[23])
         worse_hnd_jit = max(jit_l_hnd, jit_r_hnd)
         worse_hnd_spec = psd_norm_all[22] if jit_l_hnd >= jit_r_hnd else psd_norm_all[23]
         worse_spectra["hand"][sev].append(worse_hnd_spec)
@@ -1525,7 +1531,7 @@ def analyze_q6_clinical_metrics_upgraded(
     fig, ax = plt.subplots(figsize=(7, 5.5))
     ankle_box_data = [df[df['Severity'] == c]['Ankle_SI'].dropna().values for c in classes]
     bp0 = ax.boxplot(ankle_box_data, labels=[f"Class {c}" for c in classes],
-                     patch_artist=True, showfliers=False, widths=0.45)
+                     patch_artist=True, showfliers=show_outliers, widths=0.45)
     for patch, col in zip(bp0['boxes'], colors):
         patch.set_facecolor(col)
         patch.set_alpha(0.7)
@@ -1554,7 +1560,7 @@ def analyze_q6_clinical_metrics_upgraded(
         ax = axes_flat[idx]
         box_data = [df[df['Severity'] == c][col_name].dropna().values for c in classes]
         bp = ax.boxplot(box_data, labels=[f"Class {c}" for c in classes],
-                        patch_artist=True, showfliers=False, widths=0.45)
+                        patch_artist=True, showfliers=show_outliers, widths=0.45)
         for patch, col in zip(bp['boxes'], colors):
             patch.set_facecolor(col)
             patch.set_alpha(0.75)
@@ -1657,7 +1663,7 @@ if __name__ == "__main__":
     # plot_all_joints_spectral_profiles(a_t_dict, labels_dict, out_dir)
 
     # analyze_q6_clinical_metrics(a_t_dict, labels_dict, out_dir)
-    analyze_q6_clinical_metrics_upgraded(a_t_dict, labels_dict, out_dir)
+    analyze_q6_clinical_metrics_upgraded(a_t_dict, labels_dict, out_dir, show_outliers=False)
 
     print("\n" + "=" * 78)
     print(f"All diagnostic analyses complete. Visualizations saved to:\n  {out_dir.resolve()}")
