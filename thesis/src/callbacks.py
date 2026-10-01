@@ -19,9 +19,9 @@ from thesis.src.evaluate_smpl import SMPLEvaluator
 from thesis.src.utils.pipeline_utils import (
     format_and_convert, 
     evaluate_and_plot_distributions, 
-    plot_physical_realism_tracking,
     render_anchor_gifs,
 )
+from thesis.src.utils.visualization_utils import plot_physical_realism_tracking
 
 
 class EpochAndValPrintCallback(Callback):
