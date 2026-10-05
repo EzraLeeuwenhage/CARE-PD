@@ -22,7 +22,7 @@ from thesis.src.utils.pipeline_utils import (
     load_config, format_and_convert, evaluate_and_plot_distributions
 )
 
-CONFIG_PATH = "thesis/configs/overfit_baseline_3d.yaml"
+CONFIG_PATH = "thesis/configs/overfit_spatiotemporal_3d.yaml"
 
 
 if __name__ == "__main__":
@@ -95,7 +95,7 @@ if __name__ == "__main__":
         callbacks=[print_callback, checkpoint_callback, wandb_eval_callback],
         enable_progress_bar=False,
         max_epochs=cfg['training']['epochs'],
-        precision="32",
+        precision="bf16-mixed",
         accelerator="auto",
         devices=1,
         check_val_every_n_epoch=val_interval,

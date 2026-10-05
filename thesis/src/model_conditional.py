@@ -17,6 +17,7 @@ from thesis.src.model_backbones import (
     mul,
     add_noise
 )
+from thesis.src.backbone_spatiotemporal import SpatioTemporalBackbone
 
 
 class ConditionalBaselineModel(pl.LightningModule):
@@ -46,8 +47,15 @@ class ConditionalBaselineModel(pl.LightningModule):
         class_embed_dim = cfg['model'].get('class_embed_dim', 64)
         time_embed_dim = cfg['model'].get('time_embed_dim', 64)
         
-        self.backbone = ConditionalBaselineBackbone(cfg, hidden_dim, class_embed_dim, time_embed_dim)
-        self.flow_head = FlowHead(hidden_dim, self.backbone.seq_len, self.backbone.num_joints, self.backbone.pose_dim)
+        # Select backbone architecture
+        self.backbone_type = cfg['model'].get('backbone_type', 'mlp')
+        if self.backbone_type == 'spatiotemporal':
+            self.backbone = SpatioTemporalBackbone(cfg)
+            self.flow_head = None
+        else:
+            self.backbone = ConditionalBaselineBackbone(cfg, hidden_dim, class_embed_dim, time_embed_dim)
+            self.flow_head = FlowHead(hidden_dim, self.backbone.seq_len, self.backbone.num_joints, self.backbone.pose_dim)
+
         self.evaluator = SMPLEvaluator()
 
         # TODO: fix this
@@ -58,12 +66,18 @@ class ConditionalBaselineModel(pl.LightningModule):
         )
 
     def forward(self, x_tau_dict, tau, severity_score):
+        if self.flow_head is None:
+            return self.backbone(x_tau_dict, tau, severity_score)
         shared_latent = self.backbone(x_tau_dict, tau, severity_score)
         return self.flow_head(shared_latent)
 
     def _compute_ar_rollout_loss(self, batch):
         """Autoregressive Windowed Flow (AR-WG) Loss Computation."""
-        x_1 = {'pose': batch['pose'], 'trans': batch['trans']}
+        # center window translations so frame 0 sits at (0, 0, 0)
+        anchor_trans = batch['trans'][:, 0:1, :]
+        trans_centered = batch['trans'] - anchor_trans
+
+        x_1 = {'pose': batch['pose'], 'trans': trans_centered}
         severity_score = batch['severity']
         batch_size = severity_score.shape[0]
 
@@ -216,7 +230,7 @@ class ConditionalBaselineModel(pl.LightningModule):
         return x_tau
 
     def _run_ar_inference(self, batch, num_steps=100, generator=None):
-        """Generates the target sequence autoregressively using sliding windows."""
+        """Generates target sequence autoregressively using locally centered sliding windows."""
         true_dict = {'pose': batch['pose'], 'trans': batch['trans']}
         severity_score = batch['severity']
         batch_size = severity_score.shape[0]
@@ -230,12 +244,6 @@ class ConditionalBaselineModel(pl.LightningModule):
         M_cond = torch.zeros((batch_size, self.AR_window_size), dtype=torch.bool, device=self.device)
         M_cond[:, :self.prefix_len] = True
         M_targ = ~M_cond
-
-        # # Calculate NFEs per window to ensure fair comparison with one-shot generation
-        # total_target_frames = max_seq_length - self.prefix_len
-        # frames_per_window = self.AR_window_size - self.prefix_len
-        # num_windows = max(1, math.ceil(total_target_frames / frames_per_window))
-        # steps_per_window = max(1, num_steps // num_windows)
         
         while gen_pose.shape[1] < max_seq_length:
             # Create new window with prefix from last (generated) frames
@@ -243,7 +251,11 @@ class ConditionalBaselineModel(pl.LightningModule):
             window_trans = torch.zeros((batch_size, self.AR_window_size, 3), device=self.device)
 
             window_pose[:, :self.prefix_len] = gen_pose[:, -self.prefix_len:]
-            window_trans[:, :self.prefix_len] = gen_trans[:, -self.prefix_len:]
+            
+            # create locally centered prefix (starts at 0, 0, 0)
+            anchor_trans = gen_trans[:, -self.prefix_len : -self.prefix_len + 1]
+            window_trans[:, :self.prefix_len] = gen_trans[:, -self.prefix_len:] - anchor_trans
+            
             x1_window = {'pose': window_pose, 'trans': window_trans}
             
             x0_window = generate_x0(
@@ -254,9 +266,10 @@ class ConditionalBaselineModel(pl.LightningModule):
             
             x1 = self.solve_ODE(x_tau, severity_score, M_targ, num_steps)
 
-            # Concat new generated frames to current sequence total until we pass max sequence length in batch
+            # Restore continuous global world coordinates
+            new_trans_world = x1['trans'][:, self.prefix_len:] + anchor_trans
             gen_pose = torch.cat([gen_pose, x1['pose'][:, self.prefix_len:]], dim=1)
-            gen_trans = torch.cat([gen_trans, x1['trans'][:, self.prefix_len:]], dim=1)
+            gen_trans = torch.cat([gen_trans, new_trans_world], dim=1)
         
         return gen_pose[:, :max_seq_length], gen_trans[:, :max_seq_length]
 
