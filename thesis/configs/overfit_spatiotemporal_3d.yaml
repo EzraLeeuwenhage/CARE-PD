@@ -1,11 +1,11 @@
 model:
-  name: "Overfit-AR-SpatioTemporal-3D"
+  name: "Overfit-AR-SpatioTemporal-3D-(smaller)"
   generation_mode: "ar_rollout"       # Switch between "ar_rollout" and "one_shot"
   backbone_type: "spatiotemporal"     # Switch between "mlp" and "spatiotemporal"
   is_joint_model: false
   hidden_dim: 256
   num_heads: 8                        # number of attention heads for spatiotemporal backbone
-  dilations: [1, 2, 4, 8, 16]         # receptive field dilations for spatiotemporal backbone (63 frames)
+  dilations: [1, 2, 4, 8]             # receptive field dilations for spatiotemporal backbone - 31 frames (1 + 2 * (1 + 2 + 4 + 8))
   class_embed_dim: 64
   time_embed_dim: 64
   num_classes: 4

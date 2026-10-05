@@ -22,7 +22,7 @@ from thesis.src.utils.pipeline_utils import (
     load_config, format_and_convert, evaluate_and_plot_distributions
 )
 
-CONFIG_PATH = "thesis/configs/overfit_spatiotemporal_3d.yaml"
+CONFIG_PATH = "thesis/configs/spatiotemporal_3d.yaml"
 
 
 if __name__ == "__main__":
@@ -39,12 +39,19 @@ if __name__ == "__main__":
     local_wandb_dir = Path("/content/wandb_runtime")
     local_wandb_dir.mkdir(parents=True, exist_ok=True)
 
+    # optionally load model and trainer state from checkpoint
+    resume_ckpt = cfg['training'].get('resume_checkpoint', None)
+    resume_trainer_state = cfg['training'].get('resume_trainer_state', False)
+    wandb_run_id = cfg['training'].get('resume_wandb_id', None)
+    is_resuming = bool(resume_ckpt and resume_trainer_state and wandb_run_id)
+
     run = wandb.init(
         project="thesis",
         name=model_name,
         dir=str(local_wandb_dir),
         config=cfg,
-        # reinit=True
+        id=wandb_run_id if is_resuming else None,
+        resume="allow" if is_resuming else None,
     )
     wandb_logger = WandbLogger(experiment=run)
 
@@ -61,10 +68,7 @@ if __name__ == "__main__":
         eval_loader = get_dataloader(cfg, mode='eval')
         test_loader = get_dataloader(cfg, mode='test')
 
-    # optionally load model and trainer state from checkpoint
-    resume_ckpt = cfg['training'].get('resume_checkpoint', None)
-    resume_trainer_state = cfg['training'].get('resume_trainer_state', False)
-
+    # Load model from checkpoint if specified, otherwise initialize a new model
     if resume_ckpt:
         ckpt_path = Path(resume_ckpt)
         if not ckpt_path.exists():
@@ -95,14 +99,18 @@ if __name__ == "__main__":
         callbacks=[print_callback, checkpoint_callback, wandb_eval_callback],
         enable_progress_bar=False,
         max_epochs=cfg['training']['epochs'],
-        precision="bf16-mixed",
+        precision="bf16-mixed",  # Solves attention overflows instantly
+        gradient_clip_val=1.0,   # Solves gradient shocks
         accelerator="auto",
         devices=1,
         check_val_every_n_epoch=val_interval,
     )
 
-    print("\n--- PHASE 0: BASELINE EVALUATION ---")
-    trainer.validate(model, dataloaders=eval_loader, verbose=False)
+    if not (resume_ckpt and resume_trainer_state):
+        print("\n--- PHASE 0: BASELINE EVALUATION ---")
+        trainer.validate(model, dataloaders=eval_loader, verbose=False)
+    else:
+        print("\n[RESUME] Skipping Phase 0 Baseline Evaluation. Already completed.")
 
     print("\n--- PHASE 1: TRAINING ---")
     fit_ckpt_path = str(resume_ckpt) if (resume_ckpt and resume_trainer_state) else None

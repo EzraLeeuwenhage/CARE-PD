@@ -1,8 +1,11 @@
 model:
-  name: "Overfit-AR-Rollout-Cond-MLP-3D-(origin-centered-windows)"
-  generation_mode: "ar_rollout"  # Switch between "ar_rollout" and "one_shot"
+  name: "AR-SpatioTemporal-3D-(smaller)"
+  generation_mode: "ar_rollout"       # Switch between "ar_rollout" and "one_shot"
+  backbone_type: "spatiotemporal"     # Switch between "mlp" and "spatiotemporal"
   is_joint_model: false
-  hidden_dim: 1024
+  hidden_dim: 256
+  num_heads: 8                        # number of attention heads for spatiotemporal backbone
+  dilations: [1, 2, 4, 8, 16]         # receptive field dilations for spatiotemporal backbone - 63 frames
   class_embed_dim: 64
   time_embed_dim: 64
   num_classes: 4
@@ -25,35 +28,36 @@ windowing:
   filter_z_travel: false        # Set to 'true' to filter stationary sequences from dataset
 
 training:
-  overfit_severity_class: 1     # Set to '-1' for standard training runs, or [0-3] to overfit
+  overfit_severity_class: -1    # Set to '-1' for standard training runs, or [0-3] to overfit
   overfit_seed: 42
 
   # Path to .ckpt file to continue from (or null to train from scratch)
-  resume_checkpoint: null        
-  resume_trainer_state: false   # false: warm-start weights for N new epochs; true: restore optimizer & epoch count 
+  resume_checkpoint: "thesis/data/processed/AR-SpatioTemporal-3D-(smaller)/checkpoints/best-449-0.00.ckpt"        
+  resume_trainer_state: true    # false: warm-start weights for N new epochs; true: restore optimizer & epoch count
+  resume_wandb_id: "abc123xy"   # run id for wandb to resume logging to the same run (or null to start a new run) 
 
-  prefix_noise_std: 0.00        # Used for AR exposure bias mitigation
+  prefix_noise_std: 0.05        # Used for AR exposure bias mitigation
   path_smoothing_noise: 0.0     # TODO: test with this stuff
 
   prior_noise_scale: 1.0        # Used for informed prior generation
   use_cumsum_prior: true        # Set to true to have prefix accumulate noise over time
 
-  epochs: 1000
-  learning_rate: 0.0008
+  epochs: 4000
+  learning_rate: 0.0003
   warmup_epochs: 30
-  eta_min: 0.0001
-  batch_size: 256
+  eta_min: 0.00003
+  batch_size: 32
   shuffle: true
 
   eval_split: 0.1
   test_split: 0.2
 
-  log_interval: 25
+  log_interval: 10
   val_interval: 50
-  wandb_val_interval: 200   
+  wandb_val_interval: 500   
   eval_batches: -1              # where '-1' means all batches in the validation set
-  eval_batch_size: 512
-  num_workers: 2
+  eval_batch_size: 32
+  num_workers: 8
 
   alpha_trans: 0.50             # Mixing weight [0, 1] balancing translation vs. pose
   alpha_label: 0.50             # Mixing weight [0, 1] balancing CTMC label vs. motion    

@@ -411,6 +411,7 @@ class OverfitWrapper(Dataset):
     def __init__(self, dataset, cfg):
         super().__init__()
         self.dataset = dataset
+        self.gen_mode = cfg['model'].get('generation_mode', 'ar_rollout')
         target_sev = cfg['training'].get('overfit_severity_class', 0)
         seed = cfg['training'].get('overfit_seed', 42)
         rng = random.Random(seed)
@@ -420,12 +421,12 @@ class OverfitWrapper(Dataset):
         step_size = cfg['windowing']['step_size']
         prefix_len = cfg['windowing']['prefix_length']
 
-        # 1. Deterministically lock key across train and eval
+        # Deterministically lock key across train and eval
         if OverfitWrapper._SHARED_LOCKED_KEY is None:
             candidate_keys = [
                 k for k in dataset.pose_data.keys()
                 if dataset.key_to_severity.get(k.split('_down')[0], 0) == target_sev
-                and dataset.pose_data[k].shape[0] >= window_size
+                and dataset.pose_data[k].shape[0] >= (window_size if self.gen_mode != 'one_shot' else prefix_len)
             ]
             candidate_keys.sort()
             OverfitWrapper._SHARED_LOCKED_KEY = rng.choice(candidate_keys)
@@ -433,19 +434,23 @@ class OverfitWrapper(Dataset):
         self.locked_key = OverfitWrapper._SHARED_LOCKED_KEY
         raw_seq_len = dataset.pose_data[self.locked_key].shape[0]
 
-        # 2. Compute how many complete windows fit into the requested length
-        usable_len = min(raw_seq_len, req_max_len)
-        if usable_len < window_size:
+        # Compute training/eval frame ceiling
+        if self.gen_mode == 'one_shot':
+            # One-shot MLP requires the full canvas length (padded to max_sequence_len)
             n_windows = 1
-            max_trained_frames = window_size
+            max_trained_frames = req_max_len
         else:
-            # Number of complete windows that fit into usable_len
-            n_windows = (usable_len - window_size) // step_size + 1
-            max_trained_frames = prefix_len + n_windows * step_size
+            usable_len = min(raw_seq_len, req_max_len)
+            if usable_len < window_size:
+                n_windows = 1
+                max_trained_frames = window_size
+            else:
+                n_windows = (usable_len - window_size) // step_size + 1
+                max_trained_frames = prefix_len + n_windows * step_size
 
         OverfitWrapper._SHARED_MAX_FRAMES = max_trained_frames
 
-        # 3. Route indices based on dataset type
+        # Route indices based on dataset type
         if hasattr(dataset, 'window_indices') and isinstance(dataset, SMPLDataset):
             # Training: extract all N sliding windows belonging to this key
             self.valid_indices = [
@@ -471,8 +476,8 @@ class OverfitWrapper(Dataset):
             ]
             self.valid_indices = [matching[0]] if matching else [0]
 
-            print(f"\n[OVERFIT MODE] Eval locked to sequence: '{self.locked_key}'")
-            print(f"  -> Evaluation span locked to trained frames: [000 -> {max_trained_frames:03d}] ({n_windows} AR steps)")
+            print(f"\n[OVERFIT MODE] Mode: {self.gen_mode.upper()} locked to sequence: '{self.locked_key}'")
+            print(f"  -> Evaluation span: [000 -> {max_trained_frames:03d}] frames")
 
         self.dummy_epoch_size = cfg['training']['batch_size'] * 10
 
@@ -483,8 +488,8 @@ class OverfitWrapper(Dataset):
         actual_idx = self.valid_indices[idx % len(self.valid_indices)]
         sample = self.dataset[actual_idx]
 
-        # For eval/test sequences, slice strictly to the trained boundary
-        if OverfitWrapper._SHARED_MAX_FRAMES is not None and not isinstance(self.dataset, SMPLDataset):
+        # Only slice for AR rollout; one-shot must preserve full padded canvas
+        if self.gen_mode != 'one_shot' and OverfitWrapper._SHARED_MAX_FRAMES is not None and not isinstance(self.dataset, SMPLDataset):
             max_f = OverfitWrapper._SHARED_MAX_FRAMES
             if sample['pose'].shape[0] > max_f:
                 sample['pose'] = sample['pose'][:max_f]
@@ -517,5 +522,7 @@ def get_dataloader(cfg, mode='train'):
         batch_size=cfg['training']['batch_size'],
         shuffle=cfg['training']['shuffle'] if is_train and not is_overfit else False,
         num_workers=cfg['training'].get('num_workers', 4),
+        pin_memory=True,
+        persistent_workers=(cfg['training'].get('num_workers', 4) > 0),
         drop_last=is_train and not is_overfit
     )
