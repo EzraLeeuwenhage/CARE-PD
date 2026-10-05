@@ -88,11 +88,25 @@ def flatten_motion_inputs(x_tau_dict):
     return torch.cat([x_t_pose_flat, x_t_trans_flat], dim=1)
 
 
-class ConditionalBaselineBackbone(nn.Module):
-    """Model Backbone for FM conditioned on static severity score.
+class ResMLPBlock(nn.Module):
+    """Residual block with pre-LayerNorm and SiLU (Swish) activations."""
+    def __init__(self, dim):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.LayerNorm(dim),
+            nn.SiLU(),
+            nn.Linear(dim, dim),
+            nn.LayerNorm(dim),
+            nn.SiLU(),
+            nn.Linear(dim, dim)
+        )
+
+    def forward(self, x):
+        return x + self.block(x)
     
-    Uses MLP for static conditional label + continuous state into shared latent.
-    """
+
+class ConditionalBaselineBackbone(nn.Module):
+    """Deep Residual MLP Backbone for Flow Matching with LayerNorm and SiLU activations."""
     def __init__(self, cfg, hidden_dim=1024, class_embed_dim=64, time_embed_dim=64):
         super().__init__()
         self.cfg = cfg
@@ -104,7 +118,6 @@ class ConditionalBaselineBackbone(nn.Module):
             self.seq_len = self.cfg['windowing']['total_window_size']
             
         self.num_joints = self.cfg['data']['num_joints']
-        
         representation = self.cfg['data'].get('representation', '6D')
         self.pose_dim = 3 if representation == '3D' else 6
 
@@ -115,19 +128,28 @@ class ConditionalBaselineBackbone(nn.Module):
         motion_dim = pose_size + (self.seq_len * 3)
         input_dim = motion_dim + class_embed_dim + time_embed_dim
         
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim), nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim), nn.ReLU()
-        )
+        # Linear projection into hidden space
+        self.in_proj = nn.Linear(input_dim, hidden_dim)
         
+        # 3 Residual blocks providing 6 total non-linear transformations with identity skips
+        self.res_blocks = nn.Sequential(
+            ResMLPBlock(hidden_dim),
+            ResMLPBlock(hidden_dim),
+            ResMLPBlock(hidden_dim)
+        )
+        self.out_norm = nn.LayerNorm(hidden_dim)
+
+    def _forward_latent(self, motion_flat, cond_emb, tau):
+        tau_emb = self.time_embed(tau)
+        h = torch.cat([motion_flat, cond_emb, tau_emb], dim=1)
+        h = self.in_proj(h)
+        h = self.res_blocks(h)
+        return self.out_norm(h)
+
     def forward(self, x_tau_dict, tau, severity_score):
         x_tau_flat = flatten_motion_inputs(x_tau_dict)
-        t_emb = self.time_embed(tau)
         c_emb = self.class_embed(severity_score)
-        
-        nn_input = torch.cat([x_tau_flat, c_emb, t_emb], dim=1)
-        return self.net(nn_input)
+        return self._forward_latent(x_tau_flat, c_emb, tau)
 
 
 class JointBaselineBackbone(ConditionalBaselineBackbone):
@@ -138,11 +160,8 @@ class JointBaselineBackbone(ConditionalBaselineBackbone):
     def forward(self, x_tau_dict, tau, y_tau):
         # y_tau replaces severity_score, acting as the current state in the jump process.
         x_tau_flat = flatten_motion_inputs(x_tau_dict)
-        t_emb = self.time_embed(tau)
-        y_emb = self.class_embed(y_tau) 
-        
-        joint_input = torch.cat([x_tau_flat, y_emb, t_emb], dim=1)
-        return self.net(joint_input)
+        y_tau_emb = self.class_embed(y_tau)
+        return self._forward_latent(x_tau_flat, y_tau_emb, tau)
 
 # ====================
 # HELPER FUNCTIONS
@@ -165,18 +184,19 @@ def add_noise(dict, std):
         'trans': dict['trans'] + torch.randn_like(dict['trans']) * std
     }
 
-def generate_x0(x_1_dict, prefix_len, s_scale, generator=None):
+def generate_x0(x1_dict, prefix_len, prior_noise_scale, generator=None, use_cumsum=False):
     """Helper to generate prior noise efficiently bounded by the valid generative horizon."""
-    prefix_pose = x_1_dict['pose'][:, :prefix_len]
-    prefix_trans = x_1_dict['trans'][:, :prefix_len]
-    num_frames_x0 = x_1_dict['pose'].shape[1] - prefix_len
+    prefix_pose = x1_dict['pose'][:, :prefix_len]
+    prefix_trans = x1_dict['trans'][:, :prefix_len]
+    target_frames = x1_dict['pose'].shape[1] - prefix_len
 
-    # Generate Brownian prior from prefix
-    x_0 = generate_motion_prior_from_prefix(prefix_pose, prefix_trans, num_frames_x0, s_scale, generator=generator)
+    # Generate prior from prefix
+    priors = generate_motion_prior_from_prefix(
+        prefix_pose, prefix_trans, target_frames, 
+        prior_noise_scale=prior_noise_scale, generator=generator, use_cumsum=use_cumsum
+    )
     
-    x_0_pose = torch.zeros_like(x_1_dict['pose'])
-    x_0_trans = torch.zeros_like(x_1_dict['trans'])
-    x_0_pose[:, prefix_len:] = x_0['pose']
-    x_0_trans[:, prefix_len:] = x_0['trans']
+    x0_pose = torch.cat([prefix_pose, priors['pose']], dim=1)
+    x0_trans = torch.cat([prefix_trans, priors['trans']], dim=1)
 
-    return {'pose': x_0_pose, 'trans': x_0_trans}
+    return {'pose': x0_pose, 'trans': x0_trans}
