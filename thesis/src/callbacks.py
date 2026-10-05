@@ -175,17 +175,36 @@ class WandBEvaluationCallback(Callback):
 
         if self.gen_mode == 'ar_rollout':
             step_size = self.cfg['windowing'].get('step_size', 45)
+
+            # Window 0 (frames [prefix_len : prefix_len + step_size])
             w0_gt = torch.cat([p[:, prefix_len:prefix_len + step_size] for p in data_dict["gt"]["pose"] if p.shape[1] >= prefix_len + step_size], dim=1)
             w0_gen = torch.cat([p[:, prefix_len:prefix_len + step_size] for p in data_dict["gen"]["pose"] if p.shape[1] >= prefix_len + step_size], dim=1)
+
+            # Window 1 (frames [prefix_len + step_size : prefix_len + 2 * step_size])
             w1_gt_list = [p[:, prefix_len + step_size:prefix_len + 2 * step_size] for p in data_dict["gt"]["pose"] if p.shape[1] >= prefix_len + 2 * step_size]
             w1_gen_list = [p[:, prefix_len + step_size:prefix_len + 2 * step_size] for p in data_dict["gen"]["pose"] if p.shape[1] >= prefix_len + 2 * step_size]
+
+            # Last Window (terminal window per sequence for sequences with >= 2 windows)
+            w_last_gt_list, w_last_gen_list = [], []
+            for p_gt, p_gen in zip(data_dict["gt"]["pose"], data_dict["gen"]["pose"]):
+                n_wins = (p_gt.shape[1] - prefix_len) // step_size
+                if n_wins >= 2:
+                    w_start = prefix_len + (n_wins - 1) * step_size
+                    w_end = w_start + step_size
+                    w_last_gt_list.append(p_gt[:, w_start:w_end])
+                    w_last_gen_list.append(p_gen[:, w_start:w_end])
 
             if w0_gt.shape[1] > 0 and len(w1_gt_list) > 0:
                 w0_err = self.smpl_evaluator.compute_mpjae(w0_gt, w0_gen) * (180.0 / np.pi)
                 w1_err = self.smpl_evaluator.compute_mpjae(torch.cat(w1_gt_list, dim=1), torch.cat(w1_gen_list, dim=1)) * (180.0 / np.pi)
                 wandb_logs["eval_metrics/MPJAE_win0_deg"] = w0_err
                 wandb_logs["eval_metrics/MPJAE_win1_deg"] = w1_err
-                wandb_logs["eval_metrics/AR_Drift_Ratio"] = w1_err / (w0_err + 1e-6)
+
+                if len(w_last_gt_list) > 0:
+                    w_last_gt = torch.cat(w_last_gt_list, dim=1)
+                    w_last_gen = torch.cat(w_last_gen_list, dim=1)
+                    w_last_err = self.smpl_evaluator.compute_mpjae(w_last_gt, w_last_gen) * (180.0 / np.pi)
+                    wandb_logs["eval_metrics/MPJAE_last_win_deg"] = w_last_err
 
         # Evaluate distributions
         if not is_overfit:
