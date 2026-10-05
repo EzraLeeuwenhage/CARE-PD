@@ -141,10 +141,21 @@ if __name__ == "__main__":
             step_name="Final Test"
         )
 
-        smpl_evaluator = SMPLEvaluator()
-        mpjae_rad = smpl_evaluator.compute_mpjae(synthetic_data["gt"]["pose"], synthetic_data["gen"]["pose"])
-        dist_metrics["test_metrics/Overall_MPJAE_deg"] = mpjae_rad * (180.0 / np.pi)
-        dist_metrics["test_metrics/label_accuracy"] = test_label_acc
+        smpl_evaluator = SMPLEvaluator(fps=30)
+        prefix_len = cfg['windowing']['prefix_length']
+
+        # Slice to generated target frames and concatenate across the timeline
+        target_gt = [p[:, prefix_len:] for p in synthetic_data["gt"]["pose"] if p.shape[1] > prefix_len]
+        target_gen = [p[:, prefix_len:] for p in synthetic_data["gen"]["pose"] if p.shape[1] > prefix_len]
+
+        flat_gt_pose = torch.cat(target_gt, dim=1)
+        flat_gen_pose = torch.cat(target_gen, dim=1)
+
+        mpjae_rad = smpl_evaluator.compute_mpjae(flat_gt_pose, flat_gen_pose)
+        dist_metrics["test_metrics/Overall_MPJAE_deg"] = float(mpjae_rad * (180.0 / np.pi))
+
+        if is_joint_model:
+            dist_metrics["test_metrics/label_accuracy"] = test_label_acc
 
         for img_path in vis_dir.glob("*.png"):
             dist_metrics[f"test_visuals/{img_path.stem}"] = wandb.Image(str(img_path))

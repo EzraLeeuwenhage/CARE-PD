@@ -198,113 +198,82 @@ class SMPLEvaluator:
             "hand_smoothness_auc": hand_smoothness_auc
         }
 
-    def _process_single_sequence(self, k, gt_seq, gen_seq, sev):
-        """Helper method for parallelized metric computations."""
-        per_joint_err = self.compute_mpjae(gt_seq, gen_seq, return_per_joint=True)
-        gt_clinical = self.compute_clinical_metrics(gt_seq)
-        gen_clinical = self.compute_clinical_metrics(gen_seq)
-
-        return {
-            "key": k,
-            "sev": sev,
-            "per_joint_err": per_joint_err,
-            "gt_clinical": gt_clinical,
-            "gen_clinical": gen_clinical,
-        }
-
-    def evaluate_from_memory(self, gt_data, gen_data, labels):
+    def evaluate_from_memory(self, gt_data, gen_data, labels, compute_mpjae=True, compute_clinical=True):
         """Computes metrics from pose dictionaries in memory."""
         from joblib import Parallel, delayed
-        
-        common_keys = [k for k in gt_data.keys() if k in gen_data.keys() and not k.endswith('_trans')]
 
         results = defaultdict(lambda: defaultdict(list))
         per_sequence_results = {}
-        
-        tasks = []
-        for k in common_keys:
-            sev = labels.get(k, "Unknown")
-            tasks.append((k, gt_data[k], gen_data[k], sev))
-            
-        print(f"  [SMPLEvaluator] Processing {len(tasks)} sequences in parallel...")
-        extracted_data = Parallel(n_jobs=-1)(
-            delayed(self._process_single_sequence)(*t) for t in tasks
-        )
-        
-        for res in extracted_data:
-            k = res["key"]
-            sev = res["sev"]
-            per_joint_err = res["per_joint_err"]
-            gt_c = res["gt_clinical"]
-            gen_c = res["gen_clinical"]
-            
-            # Broad category MPJAE
-            for group_name, joint_indices in self.JOINT_GROUPS.items():
-                group_val = float(np.mean(per_joint_err[joint_indices]))
-                results["Overall"][group_name].append(group_val)
-                if sev != "Unknown":
-                    results[f"Class {sev}"][group_name].append(group_val)
 
-            # Individual joint MPJAE
-            for idx, joint_name in enumerate(self.JOINT_NAMES):
-                joint_val = float(per_joint_err[idx])
-                results["Overall"][joint_name].append(joint_val)
-                if sev != "Unknown":
-                    results[f"Class {sev}"][joint_name].append(joint_val)
+        # MPJAE
+        if compute_mpjae:
+            common_keys = [k for k in gt_data.keys() if k in gen_data and not k.endswith('_trans')]
+            if len(common_keys) > 0:
+                print(f"  [SMPLEvaluator] Computing MPJAE on {len(common_keys)} paired sequences...")
+                mpjae_tasks = [(k, gt_data[k], gen_data[k]) for k in common_keys]
+                mpjae_results = Parallel(n_jobs=-1)(
+                    delayed(self.compute_mpjae)(gt, gen, return_per_joint=True) for k, gt, gen in mpjae_tasks
+                )
+                for (k, _, _), per_joint_err in zip(mpjae_tasks, mpjae_results):
+                    sev = labels.get(k, "Unknown")
+                    for group_name, joint_indices in self.JOINT_GROUPS.items():
+                        group_val = float(np.mean(per_joint_err[joint_indices]))
+                        results["Overall"][group_name].append(group_val)
+                        if sev != "Unknown":
+                            results[f"Class {sev}"][group_name].append(group_val)
 
-            # Clinical Gait Metrics (Distributions & Errors)
-            clinical_metrics_map = {
-                "GT_Ankle_Bradykinesia": float(gt_c["ankle_bradykinesia"]),
-                "Gen_Ankle_Bradykinesia": float(gen_c["ankle_bradykinesia"]),
-                "Ankle_Bradykinesia_Error": float(abs(gt_c["ankle_bradykinesia"] - gen_c["ankle_bradykinesia"])),
+                    for idx, joint_name in enumerate(self.JOINT_NAMES):
+                        joint_val = float(per_joint_err[idx])
+                        results["Overall"][joint_name].append(joint_val)
+                        if sev != "Unknown":
+                            results[f"Class {sev}"][joint_name].append(joint_val)
 
-                "GT_Spine_Rigidity": float(gt_c["spine_rigidity"]),
-                "Gen_Spine_Rigidity": float(gen_c["spine_rigidity"]),
-                "Spine_Rigidity_Error": float(abs(gt_c["spine_rigidity"] - gen_c["spine_rigidity"])),
-
-                "GT_Ankle_SI": float(gt_c["ankle_si"]),
-                "Gen_Ankle_SI": float(gen_c["ankle_si"]),
-                "Ankle_SI_Error": float(abs(gt_c["ankle_si"] - gen_c["ankle_si"])),
-
-                "GT_Wrist_Smoothness_AUC": float(gt_c["wrist_smoothness_auc"]),
-                "Gen_Wrist_Smoothness_AUC": float(gen_c["wrist_smoothness_auc"]),
-                "Wrist_Smoothness_AUC_Error": float(abs(gt_c["wrist_smoothness_auc"] - gen_c["wrist_smoothness_auc"])),
-
-                "GT_Hand_Smoothness_AUC": float(gt_c["hand_smoothness_auc"]),
-                "Gen_Hand_Smoothness_AUC": float(gen_c["hand_smoothness_auc"]),
-                "Hand_Smoothness_AUC_Error": float(abs(gt_c["hand_smoothness_auc"] - gen_c["hand_smoothness_auc"])),
-            }
-
-            for metric_name, val in clinical_metrics_map.items():
-                results["Overall"][metric_name].append(val)
-                if sev != "Unknown":
-                    results[f"Class {sev}"][metric_name].append(val)
-
-            per_sequence_results[k] = {
-                "severity": sev,
-                "overall_mpjae": float(np.mean(per_joint_err[self.HARD_MPJAE_JOINTS])),
-                "per_joint_mpjae": {j_name: float(per_joint_err[i]) for i, j_name in enumerate(self.JOINT_NAMES)},
-                "clinical_metrics": {
-                    "gt": gt_c,
-                    "gen": gen_c,
-                    "error": {
-                        "ankle_bradykinesia": float(abs(gt_c["ankle_bradykinesia"] - gen_c["ankle_bradykinesia"])),
-                        "spine_rigidity": float(abs(gt_c["spine_rigidity"] - gen_c["spine_rigidity"])),
-                        "ankle_si": float(abs(gt_c["ankle_si"] - gen_c["ankle_si"])),
-                        "wrist_smoothness_auc": float(abs(gt_c["wrist_smoothness_auc"] - gen_c["wrist_smoothness_auc"])),
-                        "hand_smoothness_auc": float(abs(gt_c["hand_smoothness_auc"] - gen_c["hand_smoothness_auc"])),
+                    per_sequence_results[k] = {
+                        "severity": sev,
+                        "overall_mpjae": float(np.mean(per_joint_err[self.HARD_MPJAE_JOINTS])),
+                        "per_joint_mpjae": {j_name: float(per_joint_err[i]) for i, j_name in enumerate(self.JOINT_NAMES)}
                     }
-                }
-            }
 
-        # Build summary means dictionary
+        # Pathology metrics
+        if compute_clinical:
+            gt_keys = [k for k in gt_data.keys() if not k.endswith('_trans')]
+            gen_keys = [k for k in gen_data.keys() if not k.endswith('_trans')]
+
+            gt_clin = Parallel(n_jobs=-1)(delayed(self.compute_clinical_metrics)(gt_data[k]) for k in gt_keys) if gt_keys else []
+            gen_clin = Parallel(n_jobs=-1)(delayed(self.compute_clinical_metrics)(gen_data[k]) for k in gen_keys) if gen_keys else []
+
+            metric_fields = [
+                ("ankle_bradykinesia", "Ankle_Bradykinesia"),
+                ("spine_rigidity", "Spine_Rigidity"),
+                ("ankle_si", "Ankle_SI"),
+                ("wrist_smoothness_auc", "Wrist_Smoothness_AUC"),
+                ("hand_smoothness_auc", "Hand_Smoothness_AUC")
+            ]
+
+            for k, c_dict in zip(gt_keys, gt_clin):
+                sev = labels.get(k, "Unknown")
+                for field, m_name in metric_fields:
+                    val = float(c_dict[field])
+                    results["Overall"][f"GT_{m_name}"].append(val)
+                    if sev != "Unknown":
+                        results[f"Class {sev}"][f"GT_{m_name}"].append(val)
+
+            for k, c_dict in zip(gen_keys, gen_clin):
+                sev = labels.get(k, "Unknown")
+                for field, m_name in metric_fields:
+                    val = float(c_dict[field])
+                    results["Overall"][f"Gen_{m_name}"].append(val)
+                    if sev != "Unknown":
+                        results[f"Class {sev}"][f"Gen_{m_name}"].append(val)
+
+        # Summary means
         summary_results = {}
         for cls_key, metrics_dict in results.items():
             summary_results[cls_key] = {
-                metric_name: float(np.nanmean(vals))
+                metric_name: float(np.nanmean(vals)) if len(vals) > 0 else np.nan
                 for metric_name, vals in metrics_dict.items()
             }
-                
+
         cache_data = {
             "summary_means": summary_results,
             "raw_distributions": {
@@ -313,7 +282,7 @@ class SMPLEvaluator:
             },
             "per_sequence_results": per_sequence_results
         }
-            
+
         return summary_results, cache_data
 
     def evaluate_and_cache(self, gt_npz_path, gen_npz_path, labels_path, cache_output_path):

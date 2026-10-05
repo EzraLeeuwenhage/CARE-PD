@@ -7,6 +7,7 @@ from collections import defaultdict
 from sklearn.metrics import confusion_matrix
 import seaborn as sns
 import matplotlib.pyplot as plt
+from joblib import Parallel, delayed
 
 from smplx.body_models import SMPL
 from thesis.src.evaluate_h36m import H36MEvaluator
@@ -24,7 +25,11 @@ from thesis.src.utils.visualize_metrics.visualize_smpl_metric_dist import (
     plot_smpl_mpjae, 
     plot_clinical_metric_distributions
 )
-from thesis.src.utils.visualization_utils import plot_stationary_sequence_eval_metrics
+from thesis.src.utils.visualization_utils import (
+    plot_stationary_sequence_eval_metrics, 
+    plot_sequence_length_distributions
+)
+
 
 # UTILS
 def validate_config(cfg):
@@ -52,43 +57,31 @@ def unpack_inference_outputs(outputs):
 
 # GIFS
 def render_anchor_gifs(anchors, pl_module, is_joint_model, vis_dir, smpl_model, h36m_regressor, display_epoch):
-    """
-    Executes inference on anchor sequences, reconstructs the motion priors, 
-    and renders 3-way comparison GIFs for WandB logging.
-    """
-    gif_paths = []
-    
+    """Executes inference on anchor sequences, then renders all GIFs in parallel across CPU cores."""
+    render_tasks = []
+
     for sev_val, anchor_data in anchors.items():
         gen = torch.Generator(device=pl_module.device).manual_seed(anchor_data["seed"])
 
         # Run inference based on generation mode and model type
         if pl_module.gen_mode == 'one_shot' and is_joint_model:
             outputs = pl_module._run_oneshot_inference(
-                anchor_data["batch"],
-                num_steps=pl_module.num_steps,
-                x_0=anchor_data["x_0"],
-                y_0=anchor_data["y_0"],
-                generator=gen,
+                anchor_data["batch"], num_steps=pl_module.num_steps,
+                x_0=anchor_data["x_0"], y_0=anchor_data["y_0"], generator=gen
             )
         elif pl_module.gen_mode == 'one_shot' and not is_joint_model:
             outputs = pl_module._run_oneshot_inference(
-                anchor_data["batch"],
-                num_steps=pl_module.num_steps,
-                x_0=anchor_data["x_0"],
-                generator=gen,
+                anchor_data["batch"], num_steps=pl_module.num_steps,
+                x_0=anchor_data["x_0"], generator=gen
             )
         elif pl_module.gen_mode == 'ar_rollout' and is_joint_model:
             outputs = pl_module._run_ar_inference(
-                anchor_data["batch"],
-                num_steps=pl_module.num_steps,
-                y_0=anchor_data["y_0"],
-                generator=gen,
+                anchor_data["batch"], num_steps=pl_module.num_steps,
+                y_0=anchor_data["y_0"], generator=gen
             )
         elif pl_module.gen_mode == 'ar_rollout' and not is_joint_model:
             outputs = pl_module._run_ar_inference(
-                anchor_data["batch"],
-                num_steps=pl_module.num_steps,
-                generator=gen,
+                anchor_data["batch"], num_steps=pl_module.num_steps, generator=gen
             )
 
         gen_full_pose, gen_full_trans, gen_severity, _ = unpack_inference_outputs(outputs)
@@ -103,15 +96,10 @@ def render_anchor_gifs(anchors, pl_module, is_joint_model, vis_dir, smpl_model, 
 
         # Reconstruct the exact Prior for visualization 
         if pl_module.gen_mode == 'one_shot':
-            prior_full_pose = torch.cat([
-                gt_full_pose[:pl_module.prefix_len], 
-                anchor_data["x_0"]['pose'][0, pl_module.prefix_len:l]
-            ], dim=0)
-            
-            prior_full_trans = torch.cat([
-                gt_full_trans[:pl_module.prefix_len], 
-                anchor_data["x_0"]['trans'][0, pl_module.prefix_len:l]
-            ], dim=0)
+            prior_full_pose = torch.cat([gt_full_pose[:pl_module.prefix_len], 
+                                         anchor_data["x_0"]['pose'][0, pl_module.prefix_len:l]], dim=0)
+            prior_full_trans = torch.cat([gt_full_trans[:pl_module.prefix_len], 
+                                          anchor_data["x_0"]['trans'][0, pl_module.prefix_len:l]], dim=0)
         else:
             # For AR rollout, reconstruct the prior by generating it window-by-window with the same random seed
             prior_gen = torch.Generator(device=pl_module.device).manual_seed(anchor_data["seed"])
@@ -127,7 +115,7 @@ def render_anchor_gifs(anchors, pl_module, is_joint_model, vis_dir, smpl_model, 
                 
                 use_cumsum = getattr(pl_module, 'use_cumsum_prior', False)
                 prior_dict = generate_motion_prior_from_prefix(
-                    window_prefix_pose, window_prefix_trans, target_frames, 
+                    window_prefix_pose, window_prefix_trans, target_frames,
                     prior_noise_scale=pl_module.prior_noise_scale, generator=prior_gen,
                     use_cumsum=use_cumsum
                 )
@@ -144,11 +132,16 @@ def render_anchor_gifs(anchors, pl_module, is_joint_model, vis_dir, smpl_model, 
             [gt_full_trans, prior_full_trans, gen_full_trans],
             smpl_model, h36m_regressor, pl_module.device
         )
-        seq_gt, seq_prior, seq_gen = triplet_h36m[0], triplet_h36m[1], triplet_h36m[2]
-        
+
         gif_path = vis_dir / f"anchor_class_{sev_val}_epoch_{display_epoch}.gif"
-        render_three_way_gif(seq_gt, seq_prior, seq_gen, sev_val, gif_path, gen_severity=gen_sev_val)
-        gif_paths.append(gif_path)
+        render_tasks.append((triplet_h36m[0], triplet_h36m[1], triplet_h36m[2], sev_val, gif_path, gen_sev_val))
+
+    # Parallel CPU GIF Rendering across all 4 anchors
+    gif_paths = Parallel(n_jobs=min(4, len(render_tasks)))(
+        delayed(render_three_way_gif)(
+            t[0], t[1], t[2], t[3], t[4], fps=15, gen_severity=t[5]
+        ) for t in render_tasks
+    )
 
     return gif_paths
 
@@ -214,19 +207,46 @@ def format_and_convert(data_dict, cfg, is_joint_model=False, save_to_disk=False)
 
 # EVALUATE AND PLOT
 def evaluate_and_plot_distributions(memory_data, min_z_travel=0.5, is_joint_model=False, step_name="Validation"):
-    """Main Orchestrator: Partitions datasets, executes mobile & stationary tracks, and aggregates logs."""
+    """Orchestrates global MPJAE pre-evaluation, splits datasets, and runs isolated tracks."""
     out_dir = memory_data["out_dir"]
     vis_out_dir = out_dir / f"visualizations_{step_name.replace(' ', '_')}"
     vis_out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Partition data using SMPL root translations
-    mobile_data, stat_data = partition_motion_data(memory_data, min_travel=min_z_travel, disp_mode="euclidean")
+    # MPJAE Evaluation (before splitting into standard and stationary sequences)
+    smpl_eval = SMPLEvaluator(fps=30)
+    _, global_mpjae_cache = smpl_eval.evaluate_from_memory(
+        memory_data["gt_pose_dict"],
+        memory_data["gen_pose_dict"],
+        memory_data["gt_key_to_severity"],
+        compute_mpjae=True,
+        compute_clinical=False
+    )
+    plot_smpl_mpjae(global_mpjae_cache, vis_out_dir)
 
-    # Execute Mobile Evaluation Track
-    metrics_dict = evaluate_standard_track(mobile_data, vis_out_dir, step_name=step_name)
+    # Sequence Length Distribution Figures (GT & Synthetic)
+    plot_sequence_length_distributions(
+        data=memory_data["gt_pose_dict"],
+        out_dir=vis_out_dir,
+        labels=memory_data["gt_key_to_severity"],
+        prefix="gt_",
+        dataset_label="Ground Truth Baseline"
+    )
+    plot_sequence_length_distributions(
+        data=memory_data["gen_pose_dict"],
+        out_dir=vis_out_dir,
+        labels=memory_data["gen_key_to_severity"],
+        prefix="gen_",
+        dataset_label=step_name
+    )
 
-    # Execute Stationary Evaluation Track
-    stationary_metrics = evaluate_stationary_track(stat_data, vis_out_dir)
+    # Split data into standard and stationary walking sequences
+    standard_data, stationary_data = partition_motion_data(memory_data, min_travel=min_z_travel, disp_mode="euclidean")
+
+    # Eval standard sequences
+    metrics_dict = evaluate_standard_track(standard_data, vis_out_dir, step_name=step_name)
+
+    # Eval stationary sequences
+    stationary_metrics = evaluate_stationary_track(stationary_data, vis_out_dir)
     metrics_dict.update(stationary_metrics)
 
     # Confusion Matrices (Joint Model only)
@@ -298,7 +318,7 @@ def partition_motion_data(memory_data, min_travel=0.5, disp_mode="euclidean"):
         "gen_key_to_severity": {k: memory_data["gen_key_to_severity"][k] for k in gen_standard_keys if k in memory_data["gen_key_to_severity"]},
     }
 
-    stat_data = {
+    stationary_data = {
         "gt_pose_dict": _filter_dict(gt_poses, gt_stat_keys),
         "gen_pose_dict": _filter_dict(gen_poses, gen_stat_keys),
         "gt_h36m_dict": _filter_dict(memory_data["gt_h36m_dict"], gt_stat_keys),
@@ -310,17 +330,21 @@ def partition_motion_data(memory_data, min_travel=0.5, disp_mode="euclidean"):
     print(f"  [Partition] GT: {len(gt_standard_keys)} standard, {len(gt_stat_keys)} Stationary | "
           f"Gen: {len(gen_standard_keys)} standard, {len(gen_stat_keys)} Stationary ({disp_mode} >= {min_travel}m)")
 
-    return standard_data, stat_data
+    return standard_data, stationary_data
 
 def evaluate_standard_track(standard_data, vis_out_dir, step_name="Validation"):
-    """Executes the standard kinematic & clinical evaluation exclusively on standard sequences."""
+    """Executes kinematics and clinical evaluation exclusively on mobile sequences."""
     h36m_eval = H36MEvaluator(fps=30, min_z_travel=0.0)
     gt_h36m_data, _ = h36m_eval.evaluate_from_memory(standard_data["gt_h36m_dict"], standard_data["gt_key_to_severity"])
     gen_h36m_data, _ = h36m_eval.evaluate_from_memory(standard_data["gen_h36m_dict"], standard_data["gen_key_to_severity"])
 
     smpl_eval = SMPLEvaluator(fps=30)
     smpl_summary, smpl_cache_data = smpl_eval.evaluate_from_memory(
-        standard_data["gt_pose_dict"], standard_data["gen_pose_dict"], standard_data["gt_key_to_severity"]
+        standard_data["gt_pose_dict"], 
+        standard_data["gen_pose_dict"], 
+        standard_data["gt_key_to_severity"],
+        compute_mpjae=False,
+        compute_clinical=True
     )
 
     comparator = DistributionComparator()
@@ -344,14 +368,13 @@ def evaluate_standard_track(standard_data, vis_out_dir, step_name="Validation"):
 
     smpl_dist_df = comparator._format_results_to_dataframe(comparator.compare(gt_comp, gen_comp))
 
-    # Standard standard Plotting Suite
+    # plotting
     plot_dataset_summary_stats(prepare_dataframe(gt_h36m_data), vis_out_dir, prefix="gt_", dataset_label="Ground Truth Baseline")
     plot_pd_feature_violins(prepare_dataframe(gt_h36m_data), vis_out_dir, prefix="gt_", dataset_label="Ground Truth Baseline")
     plot_dataset_summary_stats(prepare_dataframe(gen_h36m_data), vis_out_dir, prefix="gen_", dataset_label=step_name)
     plot_pd_feature_violins(prepare_dataframe(gen_h36m_data), vis_out_dir, prefix="gen_", dataset_label=step_name)
     plot_pd_feature_comparison_plots(prepare_combined_dataframe(gt_h36m_data, gen_h36m_data), h36m_dist_df, vis_out_dir)
 
-    plot_smpl_mpjae(smpl_cache_data, vis_out_dir)
     plot_clinical_metric_distributions(smpl_cache_data, vis_out_dir, distances_df=smpl_dist_df)
 
     metrics_dict = {
@@ -368,10 +391,7 @@ def evaluate_standard_track(standard_data, vis_out_dir, step_name="Validation"):
     return metrics_dict
 
 def evaluate_stationary_track(stationary_data, vis_out_dir):
-    """Evaluates the 4 stationary metrics and renders the 2x2 comparison overview.
-    
-    Gracefully handles empty Generated stationary data by bypassing the distance comparator.
-    """
+    """Evaluates the 4 stationary metrics and renders the 2x2 comparison overview."""
     n_gt_stat = len([k for k in stationary_data["gt_pose_dict"] if not k.endswith('_trans')])
     n_gen_stat = len([k for k in stationary_data["gen_pose_dict"] if not k.endswith('_trans')])
     has_gen_data = (n_gen_stat > 0)
@@ -385,8 +405,10 @@ def evaluate_stationary_track(stationary_data, vis_out_dir):
     smpl_eval = SMPLEvaluator(fps=30)
     _, stat_smpl_cache = smpl_eval.evaluate_from_memory(
         stationary_data["gt_pose_dict"], 
-        (stationary_data["gen_pose_dict"] if has_gen_data else stationary_data["gt_pose_dict"]), 
-        stationary_data["gt_key_to_severity"]
+        stationary_data["gen_pose_dict"], 
+        stationary_data["gt_key_to_severity"],
+        compute_mpjae=False,
+        compute_clinical=True
     )
 
     stationary_records = []

@@ -234,11 +234,11 @@ class JointBaselineModel(ConditionalBaselineModel):
         M_cond[:, :self.prefix_len] = True
         M_targ = ~M_cond
 
-        # Calculate NFEs per window to ensure fair comparison with one-shot generation
-        total_target_frames = max_seq_length - self.prefix_len
-        frames_per_window = self.AR_window_size - self.prefix_len
-        num_windows = max(1, math.ceil(total_target_frames / frames_per_window))
-        steps_per_window = max(1, num_steps // num_windows)
+        # # Calculate NFEs per window to ensure fair comparison with one-shot generation
+        # total_target_frames = max_seq_length - self.prefix_len
+        # frames_per_window = self.AR_window_size - self.prefix_len
+        # num_windows = max(1, math.ceil(total_target_frames / frames_per_window))
+        # steps_per_window = max(1, num_steps // num_windows)
 
         if force_joint_conditioning:
             current_labels = batch['severity'].clone()
@@ -262,7 +262,7 @@ class JointBaselineModel(ConditionalBaselineModel):
             x0_window = generate_x0(x1_window, self.prefix_len, self.prior_noise_scale, generator=generator)
             x_tau = add(mask(x1_window, M_cond), mask(x0_window, M_targ))
             
-            x1, current_labels = self.solve_ODE(x_tau, current_labels, M_targ, steps_per_window, sample_labels=sample_labels)
+            x1, current_labels = self.solve_ODE(x_tau, current_labels, M_targ, num_steps, sample_labels=sample_labels)
             
             # TODO: remember we have to freeze labels after the first generated window
             # Model can only be trained to flow noise to posterior, not to flow posterior again to posterior
